@@ -167,6 +167,7 @@ def main():
     parser.add_argument("--all", action="store_true", help="Cài đặt toàn bộ skills")
     parser.add_argument("--skill", type=str, help="Cài đặt một skill cụ thể theo tên")
     parser.add_argument("--check", action="store_true", help="Chế độ kiểm tra xem trước (Dry-run)")
+    parser.add_argument("--auto-update", action="store_true", help="Kích hoạt Background Daemon tự động phát hiện và kéo cập nhật khi có git mới")
 
     args = parser.parse_args()
 
@@ -174,6 +175,10 @@ def main():
         cmd_list()
     elif args.all or args.skill:
         cmd_install(args.skill, args.all, args.check)
+        if args.auto_update and not args.check:
+            print("\n🔄 Đang thiết lập Background Daemon tự động cập nhật...")
+            import subprocess
+            subprocess.run([sys.executable, str(SCRIPTS_DIR / "update.py"), "--enable-auto-update"])
     else:
         parser.print_help()
 
