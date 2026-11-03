@@ -67,6 +67,8 @@
 7. Tiêu chuẩn hợp đồng thiết kế `DESIGN.md` và chống rác AI.
 8. Kịch bản tiếp thị thực chiến (Humanizer, Hook 3s, Direct-Response).
 9. Kiến trúc đồng bộ kỹ năng AI Agent đa nền tảng.
+10. Quản trị Agent nâng cao — Bảo mật cấu hình, chưng cất quy tắc và chốt chặn an toàn.
+11. Chắt lọc tinh hoa tiếp thị, thị giác Thumbnail High-CTR & thẩm mỹ Nothing Industrial.
 
 ---
 
