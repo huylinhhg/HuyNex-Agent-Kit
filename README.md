@@ -89,7 +89,27 @@ python3 scripts/install.py --all --check
 
 # Cài đặt chính thức vào toàn bộ AI clients (Codex, Claude, Antigravity)
 python3 scripts/install.py --all
+
+# Hoặc cài đặt kèm kích hoạt tự động nhận diện & cập nhật ngầm:
+python3 scripts/install.py --all --auto-update
 ```
+
+### 🔄 Cơ Chế Tự Động Nhận Diện & Kéo Cập Nhật (Auto-Update Daemon)
+
+Để máy của người dùng **tự động phát hiện khi Huy phát hành bài học hoặc kỹ năng mới trên GitHub** và tự động kéo về cài đặt ngầm:
+
+```bash
+# 1. Bật tính năng tự động cập nhật ngầm (Background Daemon)
+python3 scripts/update.py --enable-auto-update
+
+# 2. Kiểm tra trạng thái hoặc kéo về thủ công tức thì
+python3 scripts/update.py --check   # Kiểm tra xem có bản mới không
+python3 scripts/update.py --pull    # Kéo về và đồng bộ ngay
+```
+
+* **Cơ chế hoạt động:** Daemon chạy ngầm định kỳ (Launchd trên macOS, Task Scheduler trên Windows, Cron trên Linux).
+* **Khi phát hiện commit mới từ Huy:** Tự động `git pull` $\rightarrow$ Tự động đồng bộ vào Codex, Claude Code, Antigravity $\rightarrow$ Bắn thông báo Desktop Notification lên góc màn hình.
+* **Hủy chế độ tự động:** `python3 scripts/update.py --disable-auto-update`
 
 ---
 
