@@ -3,6 +3,18 @@
 Tất cả các thay đổi đáng chú ý của dự án **HuyNex Agent Kit** sẽ được ghi lại trong tệp này.
 Định dạng dựa trên [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/) và tuân thủ [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-11-18
+
+### 🚀 Added
+- **7 Quy tắc Vận hành Đột phá cho AI Coding Agents (rules/)**:
+  - `milestone-git-sync.md`: Giao thức tự động đồng bộ Git đơn tầng tinh gọn & Cổng bàn giao mốc hoàn chỉnh (Milestone Mutation Gate — chống Micro-Push Spam và bảo vệ hạn ngạch CI/CD).
+  - `proactive-skill-routing.md`: Cơ chế nhận diện ý định & chủ động đề xuất quy trình (Zero-Memorization Standard — người dùng không cần nhớ lệnh slash hay tên thư viện).
+  - `goal-ancestry-anti-drift.md`: Phả hệ mục tiêu & Chống lệch hướng trong hệ thống đa Agent (Multi-Agent Workflows — ràng buộc `root_goal`, `scope`, `acceptance_criteria`).
+  - `zero-friction-design-contract.md`: Hợp đồng thiết kế giao diện tự động (`DESIGN.md`), triệt tiêu 100% "AI Slop" trong phát triển Frontend.
+  - `project-scoped-skills.md`: Quy chuẩn phân tách kỹ năng chuyên biệt theo dự án (Two-Tier Skill Architecture — chống quá tải Context Window và token drain).
+  - `conservation-gate.md`: Cổng bảo toàn dữ liệu tuyệt đối (Nothing Vanishes Silently — kiểm toán 2 lớp qua mã băm và số lượng thực thể).
+  - `brutal-honesty.md`: Tính trung thực kỹ thuật khách quan (Anti-Sycophancy Standard — triệt tiêu hội chứng nịnh hót, dám cảnh báo rủi ro kiến trúc).
+
 ## [0.2.0] - 2026-11-03
 
 ### 🚀 Added

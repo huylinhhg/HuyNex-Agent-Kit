@@ -1,7 +1,7 @@
 # HuyNex Agent Kit — Hệ Thống Tri Thức & Quy Tắc AI Agent Dùng Chung
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version: 0.2.0](https://img.shields.io/badge/Version-0.2.0-green.svg)](VERSION)
+[![Version: 0.3.0](https://img.shields.io/badge/Version-0.3.0-green.svg)](VERSION)
 [![Security: Clean](https://img.shields.io/badge/Secret_Scan-Clean-brightgreen.svg)](scripts/validate.py)
 
 > **Mã nguồn mở độc lập thuộc hệ sinh thái HuyNex.**  
@@ -46,13 +46,25 @@
 
 ---
 
-## 🛡️ Danh Mục Quy Tắc Vận Hành Cốt Lõi (`rules/`)
+## 🛡️ Danh Mục 12 Quy Tắc Vận Hành Cốt Lõi (`rules/`)
 
-- `ladder-of-laziness.md`: Thang 7 nấc thẩm định code tối giản.
-- `verification-gate.md`: Nguyên tắc kiểm chứng thực tế trước khi báo hoàn thành.
-- `single-root-safety.md`: Bảo vệ cội nguồn workspace, cấm lệnh xóa đệ quy hủy diệt.
-- `board-approval-gate.md`: Cơ chế phân cấp 3 tầng can thiệp hệ thống.
-- `anti-context-dump.md`: Chưng cất ngữ nghĩa dữ liệu lớn tiết kiệm 10x–80x token.
+### A. Kỹ Sư Tối Giản & Phản Biện Khách Quan
+- **`ladder-of-laziness.md`**: Thang 7 nấc thẩm định code tối giản (Senior Dev Ponytail Standard) — ưu tiên `-N` hơn `+1`.
+- **`brutal-honesty.md`**: Tính trung thực kỹ thuật khách quan (Anti-Sycophancy) — triệt tiêu hội chứng nịnh hót, dám cảnh báo rủi ro kiến trúc.
+- **`proactive-skill-routing.md`**: Cơ chế nhận diện ý định & chủ động đề xuất công cụ (Zero-Memorization Standard).
+
+### B. Quản Trị Hệ Thống & Bảo Toàn Dữ Liệu
+- **`verification-gate.md`**: Nguyên tắc kiểm chứng thực tế bằng bài test thật trước khi báo hoàn thành.
+- **`conservation-gate.md`**: Cổng bảo toàn dữ liệu tuyệt đối (Nothing Vanishes Silently) bằng mã băm và số lượng thực thể.
+- **`board-approval-gate.md`**: Cơ chế phân định 3 cấp độ can thiệp hệ thống (Routine ──> Controlled ──> Board Only).
+- **`single-root-safety.md`**: Bảo vệ cội nguồn workspace, nghiêm cấm tuyệt đối mọi lệnh xóa đệ quy hủy diệt.
+
+### C. Tối Ưu Hóa Context & Vận Hành Đa Agent
+- **`anti-context-dump.md`**: Chưng cất ngữ nghĩa dữ liệu lớn cục bộ, tiết kiệm 10x–80x token, chống ngáo context.
+- **`project-scoped-skills.md`**: Quy chuẩn phân tách kỹ năng chuyên biệt theo dự án (Two-Tier Architecture), chống phình to context.
+- **`goal-ancestry-anti-drift.md`**: Phả hệ mục tiêu & Chống lệch hướng logic trong quy trình điều phối đa Agent.
+- **`milestone-git-sync.md`**: Giao thức Git đơn tầng tinh gọn & Cổng bàn giao mốc (Milestone Mutation Gate), chống Micro-Push Spam.
+- **`zero-friction-design-contract.md`**: Hợp đồng thiết kế giao diện tự động (`DESIGN.md`), triệt tiêu 100% "AI Slop" Frontend.
 
 ---
 
