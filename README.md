@@ -3,9 +3,26 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Version: 0.3.0](https://img.shields.io/badge/Version-0.3.0-green.svg)](VERSION)
 [![Security: Clean](https://img.shields.io/badge/Secret_Scan-Clean-brightgreen.svg)](scripts/validate.py)
+[![Platform: macOS | Windows | Linux](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-orange.svg)](#)
 
 > **Mã nguồn mở độc lập thuộc hệ sinh thái HuyNex.**  
-> Kho lưu trữ chuẩn mực (Canonical Source of Truth) về kỹ năng (Skills), quy tắc vận hành (Rules), bài học thực chiến (Lessons) và công cụ tự động hóa cho các AI Coding Agents hàng đầu thế giới (Codex, Claude Code, Antigravity, Cursor).
+> Kho lưu trữ chuẩn mực (Canonical Source of Truth) về kỹ năng (Skills), quy tắc vận hành (Rules), bài học thực chiến (Lessons) và công cụ tự động hóa cho các AI Coding Agents hàng đầu thế giới (Claude Code, Codex, Antigravity, Cursor).
+
+---
+
+## ⚡ Quickstart — Cài đặt 1 dòng lệnh (One-Line Installer)
+
+Cài đặt tự động toàn bộ Kỹ năng, 9 Modules Quy tắc và Hard Git Guardrails vào máy tính của bạn trong 3 giây:
+
+**macOS & Linux:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/huylinhhg/HuyNex-Agent-Kit/main/install.sh | bash
+```
+
+**Windows (PowerShell Run as Administrator hoặc User):**
+```powershell
+irm https://raw.githubusercontent.com/huylinhhg/HuyNex-Agent-Kit/main/install.ps1 | iex
+```
 
 ---
 
@@ -22,9 +39,43 @@
 
 ---
 
+## 🛡️ Kiến Trúc 9 Modules Quy Tắc Chuẩn Mới (`rules/modules/`)
+
+Hệ thống quy tắc được thiết kế theo chuẩn modular `@import` hiện đại của Anthropic, giúp file cấu hình gốc chỉ còn **32 dòng** và **tiết kiệm 71% token ngữ cảnh**:
+
+| Module | Tên tệp | Nội dung trọng tâm |
+|---|---|---|
+| **01** | `01-communication.md` | Tính trung thực kỹ thuật (Brutal Honesty), Phả hệ mục tiêu (Goal Ancestry), Tự động đồng bộ Git đơn tầng (Git Auto-Sync). |
+| **02** | `02-truth-context.md` | Chống ảo giác số liệu (Zero-Guessing), Chưng cất ngữ nghĩa (Semantic Distillation), Cổng bảo toàn dữ liệu (Conservation Gate). |
+| **03** | `03-code-engineering.md` | Thang 7 nấc thẩm định code (Ladder of Laziness), Tiêu chuẩn AGENTS.md, Hợp đồng thiết kế (DESIGN.md), Chuẩn OpenXML ECMA-376. |
+| **04** | `04-data-safety.md` | Cơ chế phê duyệt 3 cấp Hội đồng Quản trị (The Board Approval Gate), Bảo vệ cội nguồn Workspace (Single-Root Safety). |
+| **05** | `05-verification.md` | Tiêu chuẩn kiểm chứng theo rủi ro, cấm bịa đặt trạng thái hoàn thành. |
+| **06** | `06-collaboration.md` | Phân quyền điều phối subagent, tối ưu hóa lựa chọn model AI. |
+| **07** | `07-permissions-memory.md` | Bảo vệ thông tin xác thực (Credentials/Secrets), ranh giới bộ nhớ cá nhân. |
+| **08** | `08-versioning.md` | Quản lý phiên bản chuẩn SemVer 2.0.0 và Keep a Changelog. |
+| **09** | `09-workspace-layout.md` | Bố cục workspace chuẩn đa nền tảng, Tiêu chuẩn máy trạm tinh gọn (Power-User Zero-Bloat). |
+
+---
+
+## 🚀 Bộ Ba Vũ Khí Bảo Vệ Mới (The Triple Armor)
+
+### 1. Chốt Chặn Cứng Cấp Hệ Điều Hành (Hard Git Guardrails)
+Tự động kích hoạt thông qua `scripts/guardrail.py` kết nối trực tiếp vào hook `PreToolUse` của Claude Code:
+* Tự động chặn đứng ngay tại cửa Terminal các lệnh nguy hiểm: `git push --force`, `git reset --hard`, `git clean -fd`, `git branch -D`.
+* Cưỡng chế quy tắc **Single-Root Safety**: Bẻ gãy hoàn toàn các lệnh `rm -rf` trên thư mục gốc workspace hoặc thư mục cha, bảo vệ an toàn tuyệt đối cho ổ cứng.
+
+### 2. Tiện Ích Chưng Cất Ngữ Nghĩa Cục Bộ (`huynex-distill`)
+* Cắt tỉa 60% – 95% lượng token rác từ log kiểm thử (`npm test`, `pytest`) và `git diff` trước khi nạp vào AI Context.
+* Chống tràn bộ nhớ ngữ cảnh và triệt tiêu nguy cơ "ngáo token" trong các phiên làm việc dài.
+
+### 3. Chốt Đối Chiếu Tiêu Chí Nghiệm Thu (`huynex-spec-gate`)
+* Tiện ích CLI tự động quét file `TASK.md` hoặc đề bài: Đối chiếu 100% mục checklist `- [ ]`, kiểm tra trạng thái Git sạch sẽ và tự động chạy test suite trước khi cho phép bàn giao nhiệm vụ.
+
+---
+
 ## 📦 Danh Mục 12 Kỹ Năng Chuẩn Mở (`.agents/skills/`)
 
-### A. Bộ Kỹ Năng Nền Tảng & Quản Trị Agent (Core Metasills)
+### A. Bộ Kỹ Năng Nền Tảng & Quản Trị Agent (Core Metaskills)
 - **`skill-creator`**: Framework thiết kế, xây dựng và sinh kiểm thử tự động cho skill mới.
 - **`skill-reviewer`**: Tiêu chuẩn thẩm định 100 điểm, bảo mật và token economy của skill.
 - **`agent-rule-creator`**: Phân cấp 3 tầng quy tắc, chống mâu thuẫn nội tại và chống phình to context window.
@@ -46,85 +97,6 @@
 
 ---
 
-## 🛡️ Danh Mục 12 Quy Tắc Vận Hành Cốt Lõi (`rules/`)
+## 📄 Bản Quyền & Giấy Phép (License)
 
-### A. Kỹ Sư Tối Giản & Phản Biện Khách Quan
-- **`ladder-of-laziness.md`**: Thang 7 nấc thẩm định code tối giản (Senior Dev Ponytail Standard) — ưu tiên `-N` hơn `+1`.
-- **`brutal-honesty.md`**: Tính trung thực kỹ thuật khách quan (Anti-Sycophancy) — triệt tiêu hội chứng nịnh hót, dám cảnh báo rủi ro kiến trúc.
-- **`proactive-skill-routing.md`**: Cơ chế nhận diện ý định & chủ động đề xuất công cụ (Zero-Memorization Standard).
-
-### B. Quản Trị Hệ Thống & Bảo Toàn Dữ Liệu
-- **`verification-gate.md`**: Nguyên tắc kiểm chứng thực tế bằng bài test thật trước khi báo hoàn thành.
-- **`conservation-gate.md`**: Cổng bảo toàn dữ liệu tuyệt đối (Nothing Vanishes Silently) bằng mã băm và số lượng thực thể.
-- **`board-approval-gate.md`**: Cơ chế phân định 3 cấp độ can thiệp hệ thống (Routine ──> Controlled ──> Board Only).
-- **`single-root-safety.md`**: Bảo vệ cội nguồn workspace, nghiêm cấm tuyệt đối mọi lệnh xóa đệ quy hủy diệt.
-
-### C. Tối Ưu Hóa Context & Vận Hành Đa Agent
-- **`anti-context-dump.md`**: Chưng cất ngữ nghĩa dữ liệu lớn cục bộ, tiết kiệm 10x–80x token, chống ngáo context.
-- **`project-scoped-skills.md`**: Quy chuẩn phân tách kỹ năng chuyên biệt theo dự án (Two-Tier Architecture), chống phình to context.
-- **`goal-ancestry-anti-drift.md`**: Phả hệ mục tiêu & Chống lệch hướng logic trong quy trình điều phối đa Agent.
-- **`milestone-git-sync.md`**: Giao thức Git đơn tầng tinh gọn & Cổng bàn giao mốc (Milestone Mutation Gate), chống Micro-Push Spam.
-- **`zero-friction-design-contract.md`**: Hợp đồng thiết kế giao diện tự động (`DESIGN.md`), triệt tiêu 100% "AI Slop" Frontend.
-
----
-
-## 📖 Kho Bài Học Thực Chiến Đã Kiểm Chứng (`lessons/`)
-
-1. Quy chuẩn tạo và xử lý tài liệu Office chống lỗi unreadable content (ECMA-376).
-2. Khắc phục lỗi mở file và đơ lag cuộn trang bảng biểu trong Word.
-3. Kỹ sư tối giản và Thang 7 nấc lười biếng (Ponytail Standard).
-4. Cơ chế tự động nhận diện tác vụ và chủ động đề xuất skill.
-5. Chưng cất dữ liệu ngữ nghĩa và Cổng bảo toàn tuyệt đối.
-6. Chuẩn hóa sample rate âm thanh số 48kHz và chốt chặn audio.
-7. Tiêu chuẩn hợp đồng thiết kế `DESIGN.md` và chống rác AI.
-8. Kịch bản tiếp thị thực chiến (Humanizer, Hook 3s, Direct-Response).
-9. Kiến trúc đồng bộ kỹ năng AI Agent đa nền tảng.
-10. Quản trị Agent nâng cao — Bảo mật cấu hình, chưng cất quy tắc và chốt chặn an toàn.
-11. Chắt lọc tinh hoa tiếp thị, thị giác Thumbnail High-CTR & thẩm mỹ Nothing Industrial.
-
----
-
-## 🚀 Cài Đặt Nhanh Trong 30 Giây
-
-Hỗ trợ tự động nhận diện cả macOS, Windows và Linux:
-
-```bash
-# Clone kho tài nguyên
-git clone https://github.com/huylinhhg/HuyNex-Agent-Kit.git
-cd HuyNex-Agent-Kit
-
-# Xem danh mục kỹ năng hiện có
-python3 scripts/install.py --list
-
-# Xem trước các thay đổi (Dry-run không ghi đè)
-python3 scripts/install.py --all --check
-
-# Cài đặt chính thức vào toàn bộ AI clients (Codex, Claude, Antigravity)
-python3 scripts/install.py --all
-
-# Hoặc cài đặt kèm kích hoạt tự động nhận diện & cập nhật ngầm:
-python3 scripts/install.py --all --auto-update
-```
-
-### 🔄 Cơ Chế Tự Động Nhận Diện & Kéo Cập Nhật (Auto-Update Daemon)
-
-Để máy của người dùng **tự động phát hiện khi Huy phát hành bài học hoặc kỹ năng mới trên GitHub** và tự động kéo về cài đặt ngầm:
-
-```bash
-# 1. Bật tính năng tự động cập nhật ngầm (Background Daemon)
-python3 scripts/update.py --enable-auto-update
-
-# 2. Kiểm tra trạng thái hoặc kéo về thủ công tức thì
-python3 scripts/update.py --check   # Kiểm tra xem có bản mới không
-python3 scripts/update.py --pull    # Kéo về và đồng bộ ngay
-```
-
-* **Cơ chế hoạt động:** Daemon chạy ngầm định kỳ (Launchd trên macOS, Task Scheduler trên Windows, Cron trên Linux).
-* **Khi phát hiện commit mới từ Huy:** Tự động `git pull` $\rightarrow$ Tự động đồng bộ vào Codex, Claude Code, Antigravity $\rightarrow$ Bắn thông báo Desktop Notification lên góc màn hình.
-* **Hủy chế độ tự động:** `python3 scripts/update.py --disable-auto-update`
-
----
-
-## 📄 Bản Quyền & Giấy Phép
-Phát hành theo giấy phép [MIT License](LICENSE).
-Thuộc quyền sở hữu trí tuệ của hệ sinh thái **HuyNex** (2026).
+Dự án được phân phối dưới giấy phép mã nguồn mở **MIT License**. Tự do sử dụng, tùy biến và tích hợp vào các dự án cá nhân hoặc thương mại.
