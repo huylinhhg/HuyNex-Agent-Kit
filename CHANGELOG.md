@@ -3,6 +3,18 @@
 Tất cả các thay đổi đáng chú ý của dự án **HuyNex Agent Kit** sẽ được ghi lại trong tệp này.
 Định dạng dựa trên [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/) và tuân thủ [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.7] - 2026-11-24
+
+### 🛡️ Security, Data Safety & Filesystem Boundaries (Audit #5 Hardening)
+- **Ancestor Symlink Boundary Protection (`is_path_or_parent_symlink`)**: Replaced shallow file-only symlink check with full recursive ancestor inspection and boundary escape verification (`resolve()`), guaranteeing that writing through symlinked parent directories never escapes or mutates outside user trees.
+- **Double-Hash Write-Ahead Crash Consistency (`sha256_expected_after`)**: Eliminated the crash window between file write and post-mutation manifest update by pre-recording `sha256_expected_after` in the pre-write checkpoint. If a crash occurs and the user edits the file before recovery, `cmd_uninstall()` detects that current file differs from both installed and expected hashes, safely archiving user modifications before restoring backups.
+- **Full Planning Lock Scope (TOCTOU Mitigation)**: `LifecycleLock` is now acquired before client discovery, manifest loading, and plan generation, with immediate pre-write disk verification.
+- **Dead-Process Stale Lock Reclamation**: `LifecycleLock` inspects the PID in orphaned lock files; if the process died (SIGKILL, power loss, crash), the lock is safely reclaimed without manual user intervention.
+- **Strict Manifest Schema Validation (`validate_manifest_schema`)**: Enforced strict runtime type and enum checks for all entry types, modes, ownerships, and backup file references to eliminate invalid state interpretation.
+- **Mandatory Backup Verification**: `verify_backup_integrity()` requires a non-empty `expected_sha`; missing metadata refuses restore and flags `UNINSTALL_INCOMPLETE`.
+- **PowerShell Wrapper Strict Exit Code Handling (`install.ps1`)**: Added explicit `$LASTEXITCODE` checks after every command execution to guarantee non-zero exit propagation on Windows.
+- **Expanded Fault-Injection Regression Suite (`tests/test_fault_injection.py`)**: 10 adversarial tests covering parent symlinks, crash gaps, dead locks, and schema corruption (55/55 total test suite).
+
 ## [0.3.6] - 2026-11-24
 
 ### 🛡️ Security & Data Safety (Stable Release Gate Hardening)

@@ -49,7 +49,11 @@ SCRIPTS_DIR = KIT_ROOT / "scripts"
 
 BEGIN_TAG = "<!-- HUYNEX_AGENT_KIT_START -->"
 END_TAG = "<!-- HUYNEX_AGENT_KIT_END -->"
-KIT_VERSION = "0.3.6"
+KIT_VERSION = "0.3.7"
+
+VALID_TYPES = {"SKILL", "RULE_MODULE", "ROOT_INSTRUCTION", "GUARDRAIL_HOOK", "UNKNOWN"}
+VALID_MANAGED_MODES = {"managed_file", "injected_block"}
+VALID_OWNERSHIPS = {"EXISTED_PRIOR_USER", "HUYNEX_CREATED", "UNKNOWN_LEGACY_V031", "UNKNOWN"}
 
 
 class ManifestCorruptError(RuntimeError):
@@ -60,8 +64,50 @@ class LifecycleLockError(RuntimeError):
     """Raised when another install/uninstall process currently holds the lifecycle lock."""
 
 
+def is_pid_alive(pid: int) -> bool:
+    """Xác minh xem một tiến trình với PID đã cho có thực sự còn đang chạy trên hệ thống không."""
+    if pid <= 0:
+        return False
+    if sys.platform != "win32":
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+    else:
+        try:
+            import ctypes
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not handle:
+                return False
+            exit_code = ctypes.c_ulong()
+            if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                kernel32.CloseHandle(handle)
+                return exit_code.value == STILL_ACTIVE
+            kernel32.CloseHandle(handle)
+            return False
+        except Exception:
+            try:
+                res = subprocess.run(
+                    ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                return str(pid) in res.stdout
+            except Exception:
+                return True
+
+
 class LifecycleLock:
-    """Cross-platform exclusive file lock using atomic O_CREAT|O_EXCL to prevent concurrent lifecycle races."""
+    """Cross-platform exclusive file lock using atomic O_CREAT|O_EXCL with dead-process recovery."""
 
     def __init__(self, home: Path):
         self.lock_path = home / ".huynex/.lifecycle.lock"
@@ -69,26 +115,50 @@ class LifecycleLock:
 
     def __enter__(self):
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            fd = os.open(str(self.lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except FileExistsError:
-            raise LifecycleLockError(
-                f"Another HuyNex lifecycle process holds lock {self.lock_path}. "
-                "Wait for it to finish or remove the stale lock file after verifying no install.py is running."
-            )
-        try:
-            payload = json.dumps({
-                "pid": os.getpid(),
-                "acquired_at": datetime.now(timezone.utc).isoformat(),
-            }).encode("utf-8")
-            with os.fdopen(fd, "wb") as f:
-                f.write(payload)
-                f.flush()
-                os.fsync(f.fileno())
-            self._acquired = True
-        except Exception:
-            self.lock_path.unlink(missing_ok=True)
-            raise
+        for attempt in range(2):
+            try:
+                fd = os.open(str(self.lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                try:
+                    payload = json.dumps({
+                        "pid": os.getpid(),
+                        "acquired_at": datetime.now(timezone.utc).isoformat(),
+                    }).encode("utf-8")
+                    with os.fdopen(fd, "wb") as f:
+                        f.write(payload)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    self._acquired = True
+                    return self
+                except Exception:
+                    self.lock_path.unlink(missing_ok=True)
+                    raise
+            except FileExistsError:
+                # Kiểm tra xem lock có bị mồ côi (stale) do tiến trình trước bị SIGKILL / crash không
+                is_stale = False
+                stale_pid = None
+                try:
+                    lock_info = json.loads(self.lock_path.read_text(encoding="utf-8"))
+                    stale_pid = lock_info.get("pid")
+                    if isinstance(stale_pid, int):
+                        if not is_pid_alive(stale_pid):
+                            is_stale = True
+                    else:
+                        is_stale = True
+                except Exception:
+                    is_stale = True
+
+                if is_stale and attempt == 0:
+                    try:
+                        self.lock_path.unlink(missing_ok=True)
+                        print(f"  ⚠️ Phát hiện lock cũ (PID {stale_pid} đã kết thúc). Thu hồi lock an toàn...")
+                        continue
+                    except OSError:
+                        pass
+
+                raise LifecycleLockError(
+                    f"Another active HuyNex lifecycle process (PID {stale_pid}) holds lock {self.lock_path}. "
+                    "Wait for it to finish."
+                )
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -101,14 +171,43 @@ class LifecycleLock:
         return False
 
 
+def is_path_or_parent_symlink(path: Path, boundary: Path | None = None) -> bool:
+    """Kiểm tra xem chính path hoặc bất kỳ thư mục cha nào có phải là symlink hay không,
+    hoặc path có resolve ra bên ngoài boundary hay không."""
+    try:
+        cur = path
+        while cur is not None:
+            if cur.is_symlink():
+                return True
+            if boundary and cur == boundary:
+                break
+            parent = cur.parent
+            if parent == cur:
+                break
+            cur = parent
+
+        if boundary:
+            resolved_boundary = boundary.resolve()
+            resolved_path = path.resolve()
+            if resolved_boundary != resolved_path and resolved_boundary not in resolved_path.parents:
+                return True
+    except (OSError, RuntimeError):
+        return True
+    return False
+
+
 def verify_backup_integrity(bk_path: Path, expected_sha: str | None) -> tuple[bool, bytes, str]:
-    """Đọc tệp sao lưu và xác minh mật mã SHA-256 trước khi cho phép phục hồi."""
+    """Đọc tệp sao lưu và xác minh mật mã SHA-256 bắt buộc trước khi cho phép phục hồi."""
+    if not bk_path.is_file():
+        return False, b"", f"Backup file not found ({bk_path})"
+    if not expected_sha or not expected_sha.strip():
+        return False, b"", f"Missing cryptographic digest (sha256_before) for backup {bk_path}"
     try:
         bk_bytes = bk_path.read_bytes()
     except OSError as e:
         return False, b"", f"Cannot read backup file {bk_path}: {e}"
     actual_sha = hashlib.sha256(bk_bytes).hexdigest()
-    if expected_sha and actual_sha != expected_sha:
+    if actual_sha != expected_sha:
         return (
             False,
             b"",
@@ -478,6 +577,41 @@ def unconfigure_claude_guardrail(settings_file: Path) -> bool:
     return False
 
 
+def validate_manifest_schema(data: dict, manifest_path: Path):
+    """Xác thực nghiêm ngặt cấu trúc và kiểu dữ liệu của manifest."""
+    if not isinstance(data, dict):
+        raise ManifestCorruptError(f"Manifest root must be a JSON object ({manifest_path})")
+    entries = data.get("entries")
+    if not isinstance(entries, dict):
+        raise ManifestCorruptError(f"Manifest JSON missing valid 'entries' dictionary ({manifest_path})")
+
+    for path_str, meta in entries.items():
+        if not isinstance(path_str, str) or not path_str.strip():
+            raise ManifestCorruptError(f"Invalid path in manifest entry: {path_str!r} ({manifest_path})")
+        if not isinstance(meta, dict):
+            raise ManifestCorruptError(f"Manifest entry for '{path_str}' must be a dictionary ({manifest_path})")
+
+        item_type = meta.setdefault("type", "UNKNOWN")
+        if item_type not in VALID_TYPES:
+            raise ManifestCorruptError(f"Invalid type '{item_type}' in manifest entry '{path_str}' ({manifest_path})")
+
+        mode = meta.setdefault("managed_mode", "managed_file")
+        if mode not in VALID_MANAGED_MODES:
+            raise ManifestCorruptError(f"Invalid managed_mode '{mode}' in manifest entry '{path_str}' ({manifest_path})")
+
+        existed_prior = meta.setdefault("existed_prior", "UNKNOWN")
+        if not isinstance(existed_prior, bool) and existed_prior != "UNKNOWN":
+            raise ManifestCorruptError(f"Invalid existed_prior '{existed_prior}' in manifest entry '{path_str}' ({manifest_path})")
+
+        ownership = meta.setdefault("ownership", "UNKNOWN")
+        if ownership not in VALID_OWNERSHIPS:
+            raise ManifestCorruptError(f"Invalid ownership '{ownership}' in manifest entry '{path_str}' ({manifest_path})")
+
+        bk = meta.get("backup_file")
+        if bk is not None and not isinstance(bk, str):
+            raise ManifestCorruptError(f"Invalid backup_file for '{path_str}' ({manifest_path})")
+
+
 def load_manifest(manifest_file: Path) -> dict:
     """Đọc manifest với cơ chế Fail-Safe tuyệt đối và Migration tự động cho v0.3.1.
     P0 DATA SAFETY: Nếu tệp manifest tồn tại nhưng hỏng/không parse được/sai cấu trúc,
@@ -508,11 +642,11 @@ def load_manifest(manifest_file: Path) -> dict:
                     "sha256_installed": item.get("sha256", ""),
                     "updated_at": item.get("installed_at", ""),
                 }
-        return {"version": KIT_VERSION, "entries": entries}
+        manifest_dict = {"version": KIT_VERSION, "entries": entries}
+        validate_manifest_schema(manifest_dict, manifest_file)
+        return manifest_dict
     elif isinstance(raw, dict):
-        entries = raw.get("entries")
-        if not isinstance(entries, dict):
-            raise ManifestCorruptError(f"Manifest JSON missing valid 'entries' object ({manifest_file})")
+        validate_manifest_schema(raw, manifest_file)
         return raw
     else:
         raise ManifestCorruptError(f"Manifest root must be a JSON object or legacy array ({manifest_file})")
@@ -523,8 +657,7 @@ def save_manifest(manifest_file: Path, manifest_data: dict):
     atomic_write(manifest_file, json.dumps(manifest_data, indent=2).encode("utf-8"))
 
 
-def cmd_install(is_all: bool, dry_run: bool) -> bool:
-    home = Path.home()
+def _run_install(home: Path, is_all: bool, dry_run: bool) -> bool:
     clients = get_detected_clients(home)
     manifest_file = home / ".huynex/installed_manifest.json"
 
@@ -561,6 +694,9 @@ def cmd_install(is_all: bool, dry_run: bool) -> bool:
                         if not c_info["installed"] or "skills_dir" not in c_info:
                             continue
                         dst = c_info["skills_dir"] / rel
+                        if is_path_or_parent_symlink(dst, boundary=home):
+                            print(f"  🛡️ Bỏ qua tệp/thư mục symlink của người dùng: {dst}")
+                            continue
                         src_bytes = src_file.read_bytes()
                         existed = dst.is_file()
                         dst_bytes = dst.read_bytes() if existed else None
@@ -578,7 +714,6 @@ def cmd_install(is_all: bool, dry_run: bool) -> bool:
                 if not c_info["installed"] or "rules_dir" not in c_info:
                     continue
 
-                # Nếu là Cursor: dùng định dạng .mdc và thêm frontmatter
                 if c_info.get("use_mdc"):
                     target_name = rule_file.stem + ".mdc"
                     dst = c_info["rules_dir"] / target_name
@@ -591,6 +726,10 @@ def cmd_install(is_all: bool, dry_run: bool) -> bool:
                 else:
                     dst = c_info["rules_dir"] / rule_file.name
                     rule_bytes = raw_rule_bytes
+
+                if is_path_or_parent_symlink(dst, boundary=home):
+                    print(f"  🛡️ Bỏ qua tệp/thư mục symlink của người dùng: {dst}")
+                    continue
 
                 existed = dst.is_file()
                 dst_bytes = dst.read_bytes() if existed else None
@@ -605,6 +744,9 @@ def cmd_install(is_all: bool, dry_run: bool) -> bool:
         root_file = c_info.get("root_file")
         if not root_file:
             continue
+        if is_path_or_parent_symlink(root_file, boundary=home):
+            print(f"  🛡️ Bỏ qua tệp/thư mục symlink của người dùng: {root_file}")
+            continue
         existed = root_file.is_file()
         new_content, changed = inject_rules_block_safely(root_file, rules_block)
         if changed:
@@ -618,11 +760,12 @@ def cmd_install(is_all: bool, dry_run: bool) -> bool:
         guardrail_src = SCRIPTS_DIR / "guardrail.py"
         if guardrail_src.is_file():
             dst_hook = claude_info["hooks_dir"] / "guardrail.py"
-            hook_bytes = guardrail_src.read_bytes()
-            existed = dst_hook.is_file()
-            dst_hook_bytes = dst_hook.read_bytes() if existed else None
-            if dst_hook_bytes != hook_bytes:
-                plan.append(("GUARDRAIL_HOOK", "Claude Code Guardrail Hook", dst_hook, hook_bytes, dst_hook_bytes, existed))
+            if not is_path_or_parent_symlink(dst_hook, boundary=home):
+                hook_bytes = guardrail_src.read_bytes()
+                existed = dst_hook.is_file()
+                dst_hook_bytes = dst_hook.read_bytes() if existed else None
+                if dst_hook_bytes != hook_bytes:
+                    plan.append(("GUARDRAIL_HOOK", "Claude Code Guardrail Hook", dst_hook, hook_bytes, dst_hook_bytes, existed))
 
     # Báo cáo kết quả lập kế hoạch
     print(f"\nSố lượng mục cần áp dụng/cập nhật: {len(plan)}")
@@ -634,103 +777,118 @@ def cmd_install(is_all: bool, dry_run: bool) -> bool:
         print("\n[Dry-run] Hoàn tất kiểm tra trước. Không có thay đổi nào được ghi vào đĩa.")
         return True
 
-    # Thực thi cài đặt trong phạm vi khóa độc quyền và Write-Ahead Manifest Checkpointing
-    try:
-        lock = LifecycleLock(home)
-        lock.__enter__()
-    except LifecycleLockError as e:
-        print(f"\n❌ LỖI KHÓA ĐỒNG THỜI (CONCURRENT LIFECYCLE): {e}")
-        return False
+    backup_dir = create_unique_backup_dir(home)
+    backup_records = []
 
-    try:
-        backup_dir = create_unique_backup_dir(home)
-        backup_records = []
+    for act, desc, dst, new_b, old_b, existed in plan:
+        # Symlink boundary safety: kiểm tra lại trước khi ghi
+        if is_path_or_parent_symlink(dst, boundary=home):
+            print(f"  🛡️ Bỏ qua tệp/thư mục symbolic link của người dùng để bảo toàn ranh giới: {dst}")
+            continue
 
-        for act, desc, dst, new_b, old_b, existed in plan:
-            # Symlink safety: không tự ý ghi đè/phá hủy symbolic link của người dùng
-            if dst.is_symlink():
-                print(f"  🛡️ Bỏ qua symbolic link của người dùng để bảo toàn liên kết: {dst}")
-                continue
+        # TOCTOU mitigation: kiểm tra lại xem file trên đĩa có bị sửa sau khi lập plan không
+        if existed and dst.is_file():
+            current_disk_bytes = dst.read_bytes()
+            if old_b is not None and current_disk_bytes != old_b:
+                print(f"  ⚠️ File {dst} đã thay đổi trên đĩa kể từ khi lập kế hoạch. Cập nhật bản chụp trước khi ghi.")
+                old_b = current_disk_bytes
 
-            bk_file_str = None
-            sha_before = None
-            if old_b is not None:
-                bk_file, sha_before = write_immutable_backup_file(
-                    backup_dir, len(backup_records), dst, old_b
-                )
-                bk_file_str = str(bk_file)
-                backup_records.append({
-                    "path": str(dst),
-                    "backup_file": bk_file_str,
-                    "sha256_before": sha_before
-                })
+        bk_file_str = None
+        sha_before = None
+        if old_b is not None:
+            bk_file, sha_before = write_immutable_backup_file(
+                backup_dir, len(backup_records), dst, old_b
+            )
+            bk_file_str = str(bk_file)
+            backup_records.append({
+                "path": str(dst),
+                "backup_file": bk_file_str,
+                "sha256_before": sha_before
+            })
 
-            # Ghi nhận trạng thái sở hữu tệp (P0 Data Safety - Immutable Ownership)
-            prev_entry = active_entries.get(str(dst), {})
-            if prev_entry and "existed_prior" in prev_entry:
-                initial_existed_prior = prev_entry["existed_prior"]
-                initial_backup_file = prev_entry.get("backup_file")
-                initial_sha_before = prev_entry.get("sha256_before")
-                initial_ownership = prev_entry.get("ownership")
-            else:
-                initial_existed_prior = existed
-                initial_backup_file = None
-                initial_sha_before = None
-                initial_ownership = "EXISTED_PRIOR_USER" if existed else "HUYNEX_CREATED"
+        # Ghi nhận trạng thái sở hữu tệp (P0 Data Safety - Immutable Ownership)
+        prev_entry = active_entries.get(str(dst), {})
+        if prev_entry and "existed_prior" in prev_entry:
+            initial_existed_prior = prev_entry["existed_prior"]
+            initial_backup_file = prev_entry.get("backup_file")
+            initial_sha_before = prev_entry.get("sha256_before")
+            initial_ownership = prev_entry.get("ownership")
+        else:
+            initial_existed_prior = existed
+            initial_backup_file = None
+            initial_sha_before = None
+            initial_ownership = "EXISTED_PRIOR_USER" if existed else "HUYNEX_CREATED"
 
-            # WRITE-AHEAD CHECKPOINT: Lưu manifest TRƯỚC khi ghi file đích để đảm bảo crash consistency
-            active_entries[str(dst)] = {
-                "type": act,
-                "managed_mode": "injected_block" if act == "ROOT_INSTRUCTION" and initial_existed_prior is True else "managed_file",
-                "existed_prior": initial_existed_prior,
-                "ownership": initial_ownership,
-                "backup_file": initial_backup_file or bk_file_str,
-                "sha256_before": initial_sha_before or sha_before,
-                "sha256_installed": prev_entry.get("sha256_installed"),
-                "status": "IN_PROGRESS",
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            }
-            manifest_data["version"] = KIT_VERSION
-            manifest_data["status"] = "INSTALL_IN_PROGRESS"
-            manifest_data["updated_at"] = datetime.now(timezone.utc).isoformat()
-            manifest_data["entries"] = active_entries
-            save_manifest(manifest_file, manifest_data)
+        sha_expected_after = hashlib.sha256(new_b).hexdigest()
 
-            # Thực hiện ghi nguyên tử (atomic write)
-            mode = 0o755 if "guardrail" in dst.name else None
-            atomic_write(dst, new_b, mode=mode)
-
-            # POST-MUTATION CHECKPOINT: Đánh dấu tệp đã cài hoàn chỉnh kèm SHA-256 thực tế
-            active_entries[str(dst)]["sha256_installed"] = hashlib.sha256(new_b).hexdigest()
-            active_entries[str(dst)]["status"] = "INSTALLED"
-            active_entries[str(dst)]["updated_at"] = datetime.now(timezone.utc).isoformat()
-            save_manifest(manifest_file, manifest_data)
-            print(f"  ✓ Đã ghi: {dst}")
-
-        # Đăng ký hook vào Claude settings.json
-        if claude_info["installed"]:
-            hook_path = claude_info["hooks_dir"] / "guardrail.py"
-            settings_file = claude_info["settings_file"]
-            registered = configure_claude_guardrail(settings_file, hook_path, dry_run=False)
-            if registered:
-                print(f"  ✓ Đã kích hoạt PreToolUse hook trong: {settings_file}")
-
-        # Lưu bản sao lưu và hoàn tất giao dịch manifest
-        if backup_records:
-            atomic_write(backup_dir / "manifest.json", json.dumps(backup_records, indent=2).encode("utf-8"))
-            print(f"\n🛡️ Bản sao lưu an toàn được lưu tại: {backup_dir}")
-
+        # WRITE-AHEAD CHECKPOINT (P0 CRASH CONSISTENCY):
+        # Lưu cả sha256_expected_after TRƯỚC khi ghi file đích để loại trừ hoàn toàn khoảng trống sau crash
+        active_entries[str(dst)] = {
+            "type": act,
+            "managed_mode": "injected_block" if act == "ROOT_INSTRUCTION" and initial_existed_prior is True else "managed_file",
+            "existed_prior": initial_existed_prior,
+            "ownership": initial_ownership,
+            "backup_file": initial_backup_file or bk_file_str,
+            "sha256_before": initial_sha_before or sha_before,
+            "sha256_expected_after": sha_expected_after,
+            "sha256_installed": prev_entry.get("sha256_installed"),
+            "status": "IN_PROGRESS",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
         manifest_data["version"] = KIT_VERSION
-        manifest_data["status"] = "INSTALLED"
+        manifest_data["status"] = "INSTALL_IN_PROGRESS"
         manifest_data["updated_at"] = datetime.now(timezone.utc).isoformat()
         manifest_data["entries"] = active_entries
         save_manifest(manifest_file, manifest_data)
 
-        print("\n🎉 CÀI ĐẶT HOÀN TẤT VÀ KIỂM CHỨNG THÀNH CÔNG!")
-        print("Dùng 'python scripts/install.py --doctor' để kiểm tra tình trạng hệ thống bất cứ lúc nào.")
-        return True
-    finally:
-        lock.__exit__(None, None, None)
+        # Thực hiện ghi nguyên tử (atomic write)
+        mode = 0o755 if "guardrail" in dst.name else None
+        atomic_write(dst, new_b, mode=mode)
+
+        # POST-MUTATION CHECKPOINT: Đánh dấu tệp đã cài hoàn chỉnh kèm SHA-256 thực tế
+        active_entries[str(dst)]["sha256_installed"] = sha_expected_after
+        active_entries[str(dst)]["status"] = "INSTALLED"
+        active_entries[str(dst)]["updated_at"] = datetime.now(timezone.utc).isoformat()
+        save_manifest(manifest_file, manifest_data)
+        print(f"  ✓ Đã ghi: {dst}")
+
+    # Đăng ký hook vào Claude settings.json
+    if claude_info["installed"]:
+        hook_path = claude_info["hooks_dir"] / "guardrail.py"
+        settings_file = claude_info["settings_file"]
+        if not is_path_or_parent_symlink(settings_file, boundary=home):
+            registered = configure_claude_guardrail(settings_file, hook_path, dry_run=False)
+            if registered:
+                print(f"  ✓ Đã kích hoạt PreToolUse hook trong: {settings_file}")
+
+    # Lưu bản sao lưu và hoàn tất giao dịch manifest
+    if backup_records:
+        atomic_write(backup_dir / "manifest.json", json.dumps(backup_records, indent=2).encode("utf-8"))
+        print(f"\n🛡️ Bản sao lưu an toàn được lưu tại: {backup_dir}")
+
+    manifest_data["version"] = KIT_VERSION
+    manifest_data["status"] = "INSTALLED"
+    manifest_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    manifest_data["entries"] = active_entries
+    save_manifest(manifest_file, manifest_data)
+
+    print("\n🎉 CÀI ĐẶT HOÀN TẤT VÀ KIỂM CHỨNG THÀNH CÔNG!")
+    print("Dùng 'python scripts/install.py --doctor' để kiểm tra tình trạng hệ thống bất cứ lúc nào.")
+    return True
+
+
+def cmd_install(is_all: bool, dry_run: bool) -> bool:
+    """Cài đặt với phạm vi khóa độc quyền (LifecycleLock) bao phủ toàn bộ quá trình đọc và ghi (trừ dry-run)."""
+    home = Path.home()
+    if dry_run:
+        return _run_install(home, is_all=is_all, dry_run=True)
+
+    try:
+        with LifecycleLock(home):
+            return _run_install(home, is_all=is_all, dry_run=False)
+    except LifecycleLockError as e:
+        print(f"\n❌ LỖI KHÓA ĐỒNG THỜI (CONCURRENT LIFECYCLE): {e}")
+        return False
 
 
 def cmd_doctor() -> bool:
@@ -903,8 +1061,8 @@ def cmd_uninstall() -> bool:
         # 1. Gỡ bỏ các tệp được ghi nhận trong manifest
         for path_str, meta in list(entries.items()):
             p = Path(path_str)
-            if p.is_symlink():
-                print(f"  🛡️ Bỏ qua symbolic link của người dùng: {p}")
+            if is_path_or_parent_symlink(p, boundary=home):
+                print(f"  🛡️ Bỏ qua tệp/thư mục symbolic link của người dùng: {p}")
                 continue
             if not p.is_file():
                 continue
@@ -916,6 +1074,7 @@ def cmd_uninstall() -> bool:
             backup_file = meta.get("backup_file")
             expected_sha_before = meta.get("sha256_before")
             installed_sha = meta.get("sha256_installed")
+            expected_after_sha = meta.get("sha256_expected_after")
             current_sha = sha256_file(p)
 
             # TRƯỜNG HỢP 1: ROOT_INSTRUCTION hoặc file tiêm block quản trị
@@ -932,7 +1091,11 @@ def cmd_uninstall() -> bool:
                     else:
                         # Byte-for-byte fidelity kèm xác minh SHA-256 backup
                         if backup_file and Path(backup_file).is_file():
-                            if current_sha == installed_sha:
+                            is_unmodified_root = (
+                                (current_sha == installed_sha)
+                                or (expected_after_sha and current_sha == expected_after_sha)
+                            )
+                            if is_unmodified_root:
                                 ok_bk, bk_bytes, err_bk = verify_backup_integrity(Path(backup_file), expected_sha_before)
                                 if not ok_bk:
                                     print(f"  ❌ LỖI TOÀN VẸN BACKUP ({p}): {err_bk}")
@@ -952,8 +1115,17 @@ def cmd_uninstall() -> bool:
 
             # TRƯỜNG HỢP 2: Tệp skill/rule ĐÃ TỒN TẠI TỪ TRƯỚC (existed_prior == True)
             elif existed_prior is True and managed_mode == "managed_file":
-                # P0-01 DATA SAFETY: Nếu người dùng đã chỉnh sửa sau khi cài đặt, BẮT BUỘC lưu trữ bảo tồn!
-                if installed_sha and current_sha and current_sha != installed_sha:
+                # P0-01 DATA SAFETY & CRASH GAP: So sánh cả installed_sha, expected_after_sha và expected_sha_before
+                is_unmodified_pre = False
+                if current_sha:
+                    if installed_sha and current_sha == installed_sha:
+                        is_unmodified_pre = True
+                    elif expected_after_sha and current_sha == expected_after_sha:
+                        is_unmodified_pre = True
+                    elif expected_sha_before and current_sha == expected_sha_before:
+                        is_unmodified_pre = True
+
+                if not is_unmodified_pre:
                     archived = preserve_user_modified_file(p, home)
                     preserved_count += 1
                     print(f"  🛡️ Tệp gốc {p} đã được chỉnh sửa sau khi cài: Bảo tồn tại {archived}")
@@ -981,7 +1153,14 @@ def cmd_uninstall() -> bool:
 
             # TRƯỜNG HỢP 4: Tệp do HuyNex tạo mới hoàn toàn (existed_prior == False)
             else:
-                if installed_sha and current_sha and current_sha != installed_sha:
+                is_unmodified_new = False
+                if current_sha:
+                    if installed_sha and current_sha == installed_sha:
+                        is_unmodified_new = True
+                    elif expected_after_sha and current_sha == expected_after_sha:
+                        is_unmodified_new = True
+
+                if not is_unmodified_new:
                     # Bảo vệ file người dùng đã chỉnh sửa với tên chống trùng lặp tuyệt đối
                     archived = preserve_user_modified_file(p, home)
                     preserved_count += 1
@@ -999,7 +1178,7 @@ def cmd_uninstall() -> bool:
         clients = get_detected_clients(home)
         for c_name, c_info in clients.items():
             rf = c_info.get("root_file")
-            if rf and rf.is_file() and not rf.is_symlink() and str(rf) not in failed_entries:
+            if rf and rf.is_file() and not is_path_or_parent_symlink(rf, boundary=home) and str(rf) not in failed_entries:
                 cleaned_text, was_stripped = strip_rules_block_safely(rf)
                 if was_stripped:
                     atomic_write(rf, cleaned_text.encode("utf-8"))

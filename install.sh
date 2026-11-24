@@ -65,12 +65,18 @@ echo "  ✓ Đã khóa nguồn tại commit: ${INSTALLED_SHA} (Set HUYNEX_REF=<t
 
 # 3. Kích hoạt cài đặt qua Python Lifecycle Engine
 echo -e "${BLUE}▶ [2/3] Đang cài đặt Kỹ năng, 9 Modules Quy tắc và Hard Guardrails...${NC}"
-"$PY_BIN" "$INSTALL_DIR/scripts/install.py" --all
+"$PY_BIN" "$INSTALL_DIR/scripts/install.py" --all || {
+    echo -e "${RED}Lỗi: Quá trình cài đặt install.py thất bại.${NC}" >&2
+    exit 1
+}
 
 # 4. Xác minh hệ thống qua Doctor
 echo ""
 echo -e "${BLUE}▶ [3/3] Đang xác minh tính toàn vẹn hệ thống (Doctor)...${NC}"
-"$PY_BIN" "$INSTALL_DIR/scripts/install.py" --doctor
+"$PY_BIN" "$INSTALL_DIR/scripts/install.py" --doctor || {
+    echo -e "${RED}Lỗi: Kiểm tra toàn vẹn hệ thống (doctor) thất bại.${NC}" >&2
+    exit 1
+}
 
 echo ""
 echo -e "${GREEN}${BOLD}🎉 CÀI ĐẶT HOÀN TẤT THÀNH CÔNG!${NC}"

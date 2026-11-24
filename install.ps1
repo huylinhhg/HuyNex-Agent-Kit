@@ -51,10 +51,18 @@ Write-Host "  ✓ Đã khóa nguồn tại commit: $installedSha (Set `$env:HUYN
 # 3. Kích hoạt cài đặt qua Python Lifecycle Engine
 Write-Host "▶ [2/3] Đang cài đặt Kỹ năng, 9 Modules Quy tắc và Hard Guardrails..." -ForegroundColor Green
 & $pyCmd (Join-Path $installDir "scripts\install.py") --all
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "❌ Lỗi: Cài đặt thất bại (install.py exited with code $LASTEXITCODE)."
+    exit $LASTEXITCODE
+}
 
 # 4. Xác minh hệ thống qua Doctor
 Write-Host "`n▶ [3/3] Đang xác minh tính toàn vẹn hệ thống (Doctor)..." -ForegroundColor Green
 & $pyCmd (Join-Path $installDir "scripts\install.py") --doctor
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "❌ Lỗi: Kiểm tra toàn vẹn thất bại (doctor exited with code $LASTEXITCODE)."
+    exit $LASTEXITCODE
+}
 
 Write-Host "`n🎉 CÀI ĐẶT HOÀN TẤT THÀNH CÔNG!" -ForegroundColor Green
 Write-Host "AI Coding Agents (Claude Code, Codex, Antigravity, Cursor) trên máy Windows đã sẵn sàng hoạt động.`n"
