@@ -203,11 +203,12 @@ def main():
         # -------------------------------------------------------------
         print("\n[Step 6] Auditing data preservation & restoration across all agents...")
 
-        # 1. Claude Code CLAUDE.md must equal original content
-        claude_after = (claude_dir / "CLAUDE.md").read_text(encoding="utf-8")
-        if claude_after.strip() != claude_orig.strip():
-            print(f"❌ Claude CLAUDE.md was corrupted! Expected:\n{claude_orig}\nGot:\n{claude_after}")
+        # 1. Claude Code CLAUDE.md must equal EXACT original bytes
+        claude_after_bytes = (claude_dir / "CLAUDE.md").read_bytes()
+        if claude_after_bytes != claude_orig.encode("utf-8"):
+            print(f"❌ Claude CLAUDE.md byte mismatch! Expected:\n{claude_orig.encode('utf-8')}\nGot:\n{claude_after_bytes}")
             sys.exit(1)
+        print("  ✓ Claude Code CLAUDE.md restored byte-for-byte.")
 
         # 2. Claude settings.json pre-existing hook must be intact
         claude_settings_after = json.loads((claude_dir / "settings.json").read_text(encoding="utf-8"))
@@ -219,29 +220,33 @@ def main():
             print("❌ Guardrail hook was not removed from settings.json during uninstall!")
             sys.exit(1)
 
-        # 3. Codex AGENTS.md must equal original content
-        codex_after = (codex_dir / "AGENTS.md").read_text(encoding="utf-8")
-        if codex_after.strip() != codex_orig.strip():
-            print(f"❌ Codex AGENTS.md was corrupted! Expected:\n{codex_orig}\nGot:\n{codex_after}")
+        # 3. Codex AGENTS.md must equal EXACT original bytes
+        codex_after_bytes = (codex_dir / "AGENTS.md").read_bytes()
+        if codex_after_bytes != codex_orig.encode("utf-8"):
+            print(f"❌ Codex AGENTS.md byte mismatch!")
             sys.exit(1)
+        print("  ✓ Codex AGENTS.md restored byte-for-byte.")
 
-        # 4. Antigravity GEMINI.md must equal original content
-        gemini_after = (gemini_dir / "GEMINI.md").read_text(encoding="utf-8")
-        if gemini_after.strip() != gemini_orig.strip():
-            print(f"❌ Antigravity GEMINI.md was corrupted! Expected:\n{gemini_orig}\nGot:\n{gemini_after}")
+        # 4. Antigravity GEMINI.md must equal EXACT original bytes
+        gemini_after_bytes = (gemini_dir / "GEMINI.md").read_bytes()
+        if gemini_after_bytes != gemini_orig.encode("utf-8"):
+            print(f"❌ Antigravity GEMINI.md byte mismatch!")
             sys.exit(1)
+        print("  ✓ Antigravity GEMINI.md restored byte-for-byte.")
 
         # 5. Cursor custom user rule must NEVER have been touched
         cursor_custom_file = cursor_rules / "user_custom.mdc"
-        if not cursor_custom_file.is_file() or cursor_custom_file.read_text(encoding="utf-8") != cursor_orig_rule:
+        if not cursor_custom_file.is_file() or cursor_custom_file.read_bytes() != cursor_orig_rule.encode("utf-8"):
             print("❌ Cursor user_custom.mdc was damaged or missing!")
             sys.exit(1)
+        print("  ✓ Cursor user_custom.mdc untouched.")
 
-        # 6. Pre-existing user skill must be RESTORED to Content A
-        skill_after = skill_file.read_text(encoding="utf-8")
-        if skill_after.strip() != skill_content_a.strip():
-            print(f"❌ Pre-existing skill was not restored to Content A! Got:\n{skill_after}")
+        # 6. Pre-existing user skill must be RESTORED byte-for-byte to Content A
+        skill_after_bytes = skill_file.read_bytes()
+        if skill_after_bytes != skill_content_a.encode("utf-8"):
+            print(f"❌ Pre-existing skill was not restored byte-for-byte to Content A!")
             sys.exit(1)
+        print("  ✓ Pre-existing user skill restored byte-for-byte.")
 
         # 7. Post-install modified Content C and Note D must be in preserved_user_modified/
         preserved_dir = mock_home / ".huynex/preserved_user_modified"

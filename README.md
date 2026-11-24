@@ -71,8 +71,10 @@ Measured using reproducible test suite logs:
 
 | Workload | Raw Chars (Tokens) | Distilled Chars (Tokens) | Token Savings | Diagnostic Retention |
 |---|---|---|---|---|
-| **Vitest Test Suite (120 tests)** | 6,376 (~1,594) | 284 (~71) | **95.5%** | **100% (4/4 errors captured)** |
-| **Git Diff (5 changed files)** | 5,966 (~1,491) | 1,736 (~434) | **70.9%** | **100% (All hunks preserved)** |
+| **Vitest Test Suite (101 tests)** | 6,373 (~1,593) | 297 (~74) | **95.3%** | **100% (All failure markers captured)** |
+| **Git Diff (6 hunks)** | 5,966 (~1,491) | 3,140 (~785) | **47.4%** | **100% (Context collapsed, hunks preserved)** |
+
+*All benchmarks dynamically verified: Test logs achieve $\ge 70\%$ reduction, Git diffs achieve $\ge 40\%$ reduction, with 100% error signatures conserved within the bounded buffer.*
 
 To reproduce locally:
 ```bash
