@@ -54,11 +54,11 @@ def main():
         # -------------------------------------------------------------
         print("\n[Step 1] Initializing mock agent environments...")
 
-        # 1. Claude Code
+        # 1. Claude Code (intentionally use CRLF to test cross-platform byte-for-byte fidelity)
         claude_dir = mock_home / ".claude"
         claude_dir.mkdir(parents=True)
-        claude_orig = "# User Personal Claude Prompt\nAlways be concise.\n"
-        (claude_dir / "CLAUDE.md").write_text(claude_orig, encoding="utf-8")
+        claude_orig = "# User Personal Claude Prompt\r\nAlways be concise.\r\n"
+        (claude_dir / "CLAUDE.md").write_bytes(claude_orig.encode("utf-8"))
         claude_settings = {
             "model": "claude-3-5-sonnet",
             "hooks": {
@@ -67,13 +67,13 @@ def main():
                 ]
             }
         }
-        (claude_dir / "settings.json").write_text(json.dumps(claude_settings, indent=2), encoding="utf-8")
+        (claude_dir / "settings.json").write_bytes(json.dumps(claude_settings, indent=2).encode("utf-8"))
 
         # 2. Codex
         codex_dir = mock_home / ".codex"
         codex_dir.mkdir(parents=True)
         codex_orig = "# User Personal Codex Directives\nStrict TDD enforced.\n"
-        (codex_dir / "AGENTS.md").write_text(codex_orig, encoding="utf-8")
+        (codex_dir / "AGENTS.md").write_bytes(codex_orig.encode("utf-8"))
 
         # 3. Cursor
         cursor_dir = mock_home / ".cursor"
@@ -87,19 +87,19 @@ def main():
             "---\n"
             "# Custom TypeScript Standards\n"
         )
-        (cursor_rules / "user_custom.mdc").write_text(cursor_orig_rule, encoding="utf-8")
+        (cursor_rules / "user_custom.mdc").write_bytes(cursor_orig_rule.encode("utf-8"))
 
         # 4. Antigravity
         gemini_dir = mock_home / ".gemini"
         gemini_dir.mkdir(parents=True)
         gemini_orig = "# User Antigravity System Directives\n"
-        (gemini_dir / "GEMINI.md").write_text(gemini_orig, encoding="utf-8")
+        (gemini_dir / "GEMINI.md").write_bytes(gemini_orig.encode("utf-8"))
 
         # 5. Pre-existing user skill with Content A (matches a skill name HuyNex installs)
         user_skill_dir = mock_home / ".agents/skills/data-conservation-gate"
         user_skill_dir.mkdir(parents=True)
         skill_content_a = "---\nname: data-conservation-gate\ndescription: User Custom Prior Implementation\n---\n# Content A (User Prior Work)\n"
-        (user_skill_dir / "SKILL.md").write_text(skill_content_a, encoding="utf-8")
+        (user_skill_dir / "SKILL.md").write_bytes(skill_content_a.encode("utf-8"))
 
         print("  ✓ Mock agents configured: Claude Code, Codex, Cursor, Antigravity, Shared Hub.")
 

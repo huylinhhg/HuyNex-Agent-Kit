@@ -212,11 +212,11 @@ def strip_rules_block_safely(target_file: Path) -> tuple[str, bool]:
 
     nl = "\r\n" if "\r\n" in existing_text else "\n"
     pattern = (
-        r"(?:" + re.escape(nl) + r")*"
+        r"(?:" + re.escape(nl) + r")?"
         + re.escape(BEGIN_TAG)
         + r".*?"
         + re.escape(END_TAG)
-        + r"(?:" + re.escape(nl) + r")*"
+        + r"(?:" + re.escape(nl) + r")?"
     )
     match = re.search(pattern, existing_text, flags=re.S)
     if match:

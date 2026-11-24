@@ -76,27 +76,27 @@ class TestDataSafetyAndNonDestructiveUninstall(unittest.TestCase):
                 "You are an assistant specialized in Rust and Linux.\n"
                 "Never do force pushes.\n"
             )
-            user_file.write_text(original_user_content, encoding="utf-8")
+            user_file.write_bytes(original_user_content.encode("utf-8"))
 
             # 1. Simulate install: inject managed block
             managed_block = f"{BEGIN_TAG}\n# Managed Governance Block\n{END_TAG}\n"
             injected_content, changed = inject_rules_block_safely(user_file, managed_block)
             self.assertTrue(changed)
-            user_file.write_text(injected_content, encoding="utf-8")
+            atomic_write(user_file, injected_content.encode("utf-8"))
 
             # Ensure both user content and managed block exist
-            self.assertIn("User Personal System Prompt", user_file.read_text())
-            self.assertIn("Managed Governance Block", user_file.read_text())
+            self.assertIn("User Personal System Prompt", user_file.read_text(encoding="utf-8"))
+            self.assertIn("Managed Governance Block", user_file.read_text(encoding="utf-8"))
 
             # 2. Simulate uninstall: strip managed block
             cleaned_text, was_stripped = strip_rules_block_safely(user_file)
             self.assertTrue(was_stripped)
-            user_file.write_text(cleaned_text, encoding="utf-8")
+            atomic_write(user_file, cleaned_text.encode("utf-8"))
 
             # P0 Assertion: User's original content must be identical!
-            self.assertEqual(user_file.read_text().strip(), original_user_content.strip())
-            self.assertNotIn("Managed Governance Block", user_file.read_text())
-            self.assertNotIn(BEGIN_TAG, user_file.read_text())
+            self.assertEqual(user_file.read_bytes(), original_user_content.encode("utf-8"))
+            self.assertNotIn("Managed Governance Block", user_file.read_text(encoding="utf-8"))
+            self.assertNotIn(BEGIN_TAG, user_file.read_text(encoding="utf-8"))
 
     def test_v031_legacy_manifest_migration(self):
         """P0 Test: Migrates v0.3.1 JSON array manifest into v0.3.3 dict manifest without crash."""
