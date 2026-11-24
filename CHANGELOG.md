@@ -3,6 +3,18 @@
 Tất cả các thay đổi đáng chú ý của dự án **HuyNex Agent Kit** sẽ được ghi lại trong tệp này.
 Định dạng dựa trên [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/) và tuân thủ [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-11-24
+
+### 🛡️ Production Hardening & Verified Stable Release Gate
+- **OS-Level Kernel File Locking (`fcntl.flock` / `msvcrt.locking`)**: Completely replaced user-space PID checking with kernel file descriptor locking bound to open file descriptors (`fcntl.flock` on POSIX, `msvcrt.locking` on Windows). Guarantees that any process termination (SIGKILL, panic, power failure) immediately releases the lock with zero race conditions and zero stale lock files.
+- **Pre-Mutation State Verification & TOCTOU Elimination**: Added immediate pre-mutation disk state verification. Detects surprise files (`absent -> present`), taking immutable backups and assigning `EXISTED_PRIOR_USER` ownership without silent overwrite, and detects mid-operation user modifications (`present -> modified`).
+- **Multi-Upgrade Lifecycle Preservation (INV-03)**: Validated data preservation across multi-version upgrades (`pre-existing A -> install v1 -> edit C -> upgrade v2 -> uninstall`). Original user content A is restored byte-for-byte, while interim user modification C is preserved in `.huynex/preserved_user_modified/`.
+- **Universal Symlink Protection**: Extended boundary symlink protection to cover all mutation paths, including `configure_claude_guardrail`, `unconfigure_claude_guardrail`, settings files, and parent directories.
+- **Semantic Cross-Field Manifest Validation**: Enforced logical consistency checks in `validate_manifest_schema` between `existed_prior`, `ownership`, `managed_mode`, and entry types.
+- **Bootstrap Script Fail-Fast Hardening (`install.ps1` & `install.sh`)**: Enforced strict `$LASTEXITCODE` checks after every native command in `install.ps1` and post-checkout revision SHA verification in both bootstrap scripts.
+- **Subprocess Concurrency & Crash Regression Suite (`tests/test_concurrency_subprocess.py`)**: 4 new tests verifying real OS subprocess concurrency, SIGKILL termination recovery, and TOCTOU surprise recovery (60/60 passing tests).
+- **Formal Data Safety Contract (`docs/DATA_SAFETY_CONTRACT.md`)**: Formalized Safety Invariants INV-01 through INV-09 with full test traceability matrix.
+
 ## [0.3.7] - 2026-11-24
 
 ### 🛡️ Security, Data Safety & Filesystem Boundaries (Audit #5 Hardening)

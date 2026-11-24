@@ -61,6 +61,10 @@ else
     }
 fi
 INSTALLED_SHA="$(git -C "$INSTALL_DIR" rev-parse --short HEAD)"
+if [ -z "$INSTALLED_SHA" ]; then
+    echo -e "${RED}Lỗi: Không thể xác định commit SHA sau khi đồng bộ kho mã nguồn.${NC}" >&2
+    exit 1
+fi
 echo "  ✓ Đã khóa nguồn tại commit: ${INSTALLED_SHA} (Set HUYNEX_REF=<tag|sha> để cố định phiên bản)"
 
 # 3. Kích hoạt cài đặt qua Python Lifecycle Engine

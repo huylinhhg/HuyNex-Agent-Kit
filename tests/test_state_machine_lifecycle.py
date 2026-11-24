@@ -218,6 +218,53 @@ class TestStateMachineLifecycle(unittest.TestCase):
         retained_manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
         self.assertEqual(retained_manifest.get("status"), "UNINSTALL_INCOMPLETE")
 
+    def test_user_modifications_across_multiple_upgrades(self):
+        """INV-03: Multi-upgrade lifecycle regression test:
+        Pre-existing A -> install v1 -> edit C -> upgrade v2 -> uninstall -> restore A and preserve C."""
+        skill_dir = self.home / ".agents/skills/data-conservation-gate"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        skill_file = skill_dir / "SKILL.md"
+
+        orig_a = b"---\nname: data-conservation-gate\n---\n# User Original Skill A\n"
+        skill_file.write_bytes(orig_a)
+
+        # 1. First install (v1)
+        self.assertTrue(cmd_install(is_all=True, dry_run=False))
+        manifest_file = self.home / ".huynex/installed_manifest.json"
+        m1 = load_manifest(manifest_file)
+        e1 = m1["entries"][str(skill_file)]
+        self.assertTrue(e1["existed_prior"])
+        self.assertEqual(e1["ownership"], "EXISTED_PRIOR_USER")
+        initial_bk = e1["backup_file"]
+        self.assertEqual(Path(initial_bk).read_bytes(), orig_a)
+
+        # 2. User modifies file to Content C
+        edit_c = b"---\nname: data-conservation-gate\n---\n# User Modified Customization C\n"
+        skill_file.write_bytes(edit_c)
+
+        # 3. Upgrade to v2 (re-install)
+        self.assertTrue(cmd_install(is_all=True, dry_run=False))
+        m2 = load_manifest(manifest_file)
+        e2 = m2["entries"][str(skill_file)]
+        # Ownership and initial backup MUST be preserved
+        self.assertTrue(e2["existed_prior"])
+        self.assertEqual(e2["ownership"], "EXISTED_PRIOR_USER")
+        self.assertEqual(e2["backup_file"], initial_bk)
+
+        # Content C must be preserved in archive
+        preserved_dir = self.home / ".huynex/preserved_user_modified"
+        self.assertTrue(preserved_dir.is_dir())
+        archived_files = list(preserved_dir.glob("*"))
+        archived_contents = [p.read_bytes() for p in archived_files]
+        self.assertTrue(any(edit_c in c for c in archived_contents), "Content C must be safely archived during upgrade")
+
+        # 4. Uninstall
+        self.assertTrue(cmd_uninstall())
+        # Original Content A must be restored 100% byte-for-byte!
+        self.assertEqual(skill_file.read_bytes(), orig_a, "Original file A must be restored byte-for-byte after uninstall")
+        # Content C still exists in preserved archive!
+        self.assertTrue(any(edit_c in p.read_bytes() for p in preserved_dir.glob("*")), "Content C must remain archived")
+
 
 if __name__ == "__main__":
     unittest.main()

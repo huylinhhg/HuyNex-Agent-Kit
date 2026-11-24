@@ -49,7 +49,7 @@ SCRIPTS_DIR = KIT_ROOT / "scripts"
 
 BEGIN_TAG = "<!-- HUYNEX_AGENT_KIT_START -->"
 END_TAG = "<!-- HUYNEX_AGENT_KIT_END -->"
-KIT_VERSION = "0.3.7"
+KIT_VERSION = "0.4.0"
 
 VALID_TYPES = {"SKILL", "RULE_MODULE", "ROOT_INSTRUCTION", "GUARDRAIL_HOOK", "UNKNOWN"}
 VALID_MANAGED_MODES = {"managed_file", "injected_block"}
@@ -107,67 +107,149 @@ def is_pid_alive(pid: int) -> bool:
 
 
 class LifecycleLock:
-    """Cross-platform exclusive file lock using atomic O_CREAT|O_EXCL with dead-process recovery."""
+    """Cross-platform kernel-level exclusive file lock bound to open file descriptor.
+
+    Uses fcntl.flock on POSIX (Linux, macOS) and msvcrt.locking on Windows.
+    Because locks are kernel-managed, when a process terminates for ANY reason
+    (including SIGKILL, crash, or panic), the operating system kernel closes the
+    file descriptor and automatically releases the lock without stale state or
+    user-space race conditions.
+    """
 
     def __init__(self, home: Path):
         self.lock_path = home / ".huynex/.lifecycle.lock"
+        self._fd: int | None = None
         self._acquired = False
 
     def __enter__(self):
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
-        for attempt in range(2):
-            try:
-                fd = os.open(str(self.lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        if sys.platform != "win32":
+            import fcntl
+            while True:
                 try:
-                    payload = json.dumps({
-                        "pid": os.getpid(),
-                        "acquired_at": datetime.now(timezone.utc).isoformat(),
-                    }).encode("utf-8")
-                    with os.fdopen(fd, "wb") as f:
-                        f.write(payload)
-                        f.flush()
-                        os.fsync(f.fileno())
-                    self._acquired = True
-                    return self
-                except Exception:
-                    self.lock_path.unlink(missing_ok=True)
-                    raise
-            except FileExistsError:
-                # Kiểm tra xem lock có bị mồ côi (stale) do tiến trình trước bị SIGKILL / crash không
-                is_stale = False
-                stale_pid = None
-                try:
-                    lock_info = json.loads(self.lock_path.read_text(encoding="utf-8"))
-                    stale_pid = lock_info.get("pid")
-                    if isinstance(stale_pid, int):
-                        if not is_pid_alive(stale_pid):
-                            is_stale = True
-                    else:
-                        is_stale = True
-                except Exception:
-                    is_stale = True
+                    fd = os.open(str(self.lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+                except OSError as e:
+                    raise LifecycleLockError(f"Cannot open lifecycle lock file {self.lock_path}: {e}")
 
-                if is_stale and attempt == 0:
-                    try:
-                        self.lock_path.unlink(missing_ok=True)
-                        print(f"  ⚠️ Phát hiện lock cũ (PID {stale_pid} đã kết thúc). Thu hồi lock an toàn...")
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except (BlockingIOError, OSError):
+                    os.close(fd)
+                    holder_pid = self._read_lock_pid()
+                    pid_str = f" (PID {holder_pid})" if holder_pid else ""
+                    raise LifecycleLockError(
+                        f"Another active HuyNex lifecycle process{pid_str} holds lock {self.lock_path}. "
+                        "Wait for it to finish."
+                    )
+
+                # Check if file was unlinked before lock was acquired (standard POSIX flock pattern)
+                try:
+                    stat_res = os.fstat(fd)
+                    if stat_res.st_nlink == 0:
+                        try:
+                            fcntl.flock(fd, fcntl.LOCK_UN)
+                        except OSError:
+                            pass
+                        os.close(fd)
                         continue
-                    except OSError:
-                        pass
+                except OSError:
+                    pass
 
-                raise LifecycleLockError(
-                    f"Another active HuyNex lifecycle process (PID {stale_pid}) holds lock {self.lock_path}. "
-                    "Wait for it to finish."
-                )
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if self._acquired:
+                self._fd = fd
+                self._acquired = True
+                self._write_lock_payload()
+                return self
+        else:
+            import msvcrt
+            flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_BINARY", 0)
             try:
-                self.lock_path.unlink(missing_ok=True)
+                fd = os.open(str(self.lock_path), flags, 0o600)
+            except OSError as e:
+                raise LifecycleLockError(f"Cannot open lifecycle lock file {self.lock_path}: {e}")
+
+            # Ensure file has at least 1 byte so locking byte 0 succeeds
+            try:
+                if os.path.getsize(str(self.lock_path)) == 0:
+                    os.write(fd, b" ")
+                    os.lseek(fd, 0, os.SEEK_SET)
             except OSError:
                 pass
+
+            try:
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            except OSError:
+                os.close(fd)
+                holder_pid = self._read_lock_pid()
+                pid_str = f" (PID {holder_pid})" if holder_pid else ""
+                raise LifecycleLockError(
+                    f"Another active HuyNex lifecycle process{pid_str} holds lock {self.lock_path}. "
+                    "Wait for it to finish."
+                )
+
+            self._fd = fd
+            self._acquired = True
+            self._write_lock_payload()
+            return self
+
+    def _read_lock_pid(self) -> int | None:
+        try:
+            raw = self.lock_path.read_text(encoding="utf-8")
+            data = json.loads(raw)
+            pid = data.get("pid")
+            return pid if isinstance(pid, int) else None
+        except Exception:
+            return None
+
+    def _write_lock_payload(self):
+        if self._fd is None:
+            return
+        try:
+            payload = json.dumps({
+                "pid": os.getpid(),
+                "acquired_at": datetime.now(timezone.utc).isoformat(),
+            }).encode("utf-8")
+            os.lseek(self._fd, 0, os.SEEK_SET)
+            os.write(self._fd, payload)
+            os.ftruncate(self._fd, len(payload))
+            os.fsync(self._fd)
+        except OSError:
+            pass
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._acquired and self._fd is not None:
+            fd = self._fd
+            self._fd = None
             self._acquired = False
+            if sys.platform != "win32":
+                import fcntl
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                except OSError:
+                    pass
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                try:
+                    self.lock_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            else:
+                import msvcrt
+                try:
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                try:
+                    self.lock_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
         return False
 
 
@@ -175,8 +257,14 @@ def is_path_or_parent_symlink(path: Path, boundary: Path | None = None) -> bool:
     """Kiểm tra xem chính path hoặc bất kỳ thư mục cha nào có phải là symlink hay không,
     hoặc path có resolve ra bên ngoài boundary hay không."""
     try:
-        cur = path
+        if path.is_symlink():
+            return True
+
+        cur = path.parent
         while cur is not None:
+            # Bỏ qua các system root symlinks tiêu chuẩn của Unix/macOS (/var, /tmp, /etc)
+            if len(cur.parts) <= 2:
+                break
             if cur.is_symlink():
                 return True
             if boundary and cur == boundary:
@@ -500,6 +588,10 @@ def write_immutable_backup_file(backup_dir: Path, index: int, dst: Path, content
 
 def configure_claude_guardrail(settings_file: Path, hook_script: Path, dry_run: bool = False) -> bool:
     """Đăng ký hook PreToolUse vào ~/.claude/settings.json một cách an toàn."""
+    if is_path_or_parent_symlink(settings_file):
+        print(f"  🛡️ Bỏ qua settings.json symlink: {settings_file}")
+        return False
+
     data = {}
     if settings_file.is_file():
         raw = settings_file.read_text(encoding="utf-8")
@@ -546,6 +638,8 @@ def configure_claude_guardrail(settings_file: Path, hook_script: Path, dry_run: 
 
 def unconfigure_claude_guardrail(settings_file: Path) -> bool:
     """Gỡ bỏ an toàn đăng ký guardrail hook khỏi ~/.claude/settings.json."""
+    if is_path_or_parent_symlink(settings_file):
+        return False
     if not settings_file.is_file():
         return False
 
@@ -610,6 +704,20 @@ def validate_manifest_schema(data: dict, manifest_path: Path):
         bk = meta.get("backup_file")
         if bk is not None and not isinstance(bk, str):
             raise ManifestCorruptError(f"Invalid backup_file for '{path_str}' ({manifest_path})")
+
+        # Semantic cross-field validation (INV-05):
+        if existed_prior is True and ownership == "HUYNEX_CREATED":
+            raise ManifestCorruptError(
+                f"Contradiction in '{path_str}': existed_prior=True cannot have ownership='HUYNEX_CREATED' ({manifest_path})"
+            )
+        if existed_prior is False and ownership == "EXISTED_PRIOR_USER":
+            raise ManifestCorruptError(
+                f"Contradiction in '{path_str}': existed_prior=False cannot have ownership='EXISTED_PRIOR_USER' ({manifest_path})"
+            )
+        if mode == "injected_block" and item_type not in ("ROOT_INSTRUCTION", "UNKNOWN"):
+            raise ManifestCorruptError(
+                f"Contradiction in '{path_str}': managed_mode='injected_block' only valid for ROOT_INSTRUCTION (got {item_type}) ({manifest_path})"
+            )
 
 
 def load_manifest(manifest_file: Path) -> dict:
@@ -786,12 +894,30 @@ def _run_install(home: Path, is_all: bool, dry_run: bool) -> bool:
             print(f"  🛡️ Bỏ qua tệp/thư mục symbolic link của người dùng để bảo toàn ranh giới: {dst}")
             continue
 
-        # TOCTOU mitigation: kiểm tra lại xem file trên đĩa có bị sửa sau khi lập plan không
-        if existed and dst.is_file():
-            current_disk_bytes = dst.read_bytes()
+        # TOCTOU mitigation & Pre-mutation state verification (P0-02 DATA SAFETY):
+        disk_exists = dst.exists()
+        current_disk_bytes = dst.read_bytes() if (disk_exists and dst.is_file()) else None
+
+        if not existed and disk_exists:
+            # Case absent -> present: Tệp xuất hiện bất ngờ giữa lúc lập plan và lúc ghi
+            print(f"  ⚠️ Phát hiện tệp mới xuất hiện trên đĩa ({dst}) sau khi lập kế hoạch. Chuyển sang chế độ bảo tồn.")
+            existed = True
+            old_b = current_disk_bytes
+            if act == "ROOT_INSTRUCTION" and current_disk_bytes is not None:
+                updated_content, _ = inject_rules_block_safely(dst, rules_block)
+                new_b = updated_content.encode("utf-8")
+        elif existed and not disk_exists:
+            # Case present -> absent: Tệp bị xóa giữa lúc lập plan và lúc ghi
+            old_b = None
+            existed = False
+        elif existed and disk_exists:
+            # Case present -> modified: Tệp bị sửa đổi giữa lúc lập plan và lúc ghi
             if old_b is not None and current_disk_bytes != old_b:
                 print(f"  ⚠️ File {dst} đã thay đổi trên đĩa kể từ khi lập kế hoạch. Cập nhật bản chụp trước khi ghi.")
                 old_b = current_disk_bytes
+                if act == "ROOT_INSTRUCTION" and current_disk_bytes is not None:
+                    updated_content, _ = inject_rules_block_safely(dst, rules_block)
+                    new_b = updated_content.encode("utf-8")
 
         bk_file_str = None
         sha_before = None
@@ -813,6 +939,20 @@ def _run_install(home: Path, is_all: bool, dry_run: bool) -> bool:
             initial_backup_file = prev_entry.get("backup_file")
             initial_sha_before = prev_entry.get("sha256_before")
             initial_ownership = prev_entry.get("ownership")
+
+            # Multi-upgrade user modification preservation (INV-03):
+            # Nếu tệp đã được cài ở phiên bản trước, nhưng nội dung trên đĩa khác sha256_installed,
+            # người dùng đã sửa đổi tệp! Lưu trữ bản sửa đổi vào preserved_user_modified trước khi nâng cấp.
+            prev_installed_sha = prev_entry.get("sha256_installed")
+            if (
+                disk_exists
+                and current_disk_bytes is not None
+                and prev_installed_sha
+                and hashlib.sha256(current_disk_bytes).hexdigest() != prev_installed_sha
+                and (initial_sha_before is None or hashlib.sha256(current_disk_bytes).hexdigest() != initial_sha_before)
+            ):
+                archived = preserve_user_modified_file(dst, home)
+                print(f"  🛡️ Tệp {dst} đã được chỉnh sửa kể từ lần cài trước: Bảo tồn bản sửa đổi tại {archived}")
         else:
             initial_existed_prior = existed
             initial_backup_file = None
@@ -1187,7 +1327,7 @@ def cmd_uninstall() -> bool:
 
         # 3. Gỡ bỏ đăng ký hook khỏi Claude settings.json
         claude_settings = clients["Claude Code"]["settings_file"]
-        if claude_settings.is_file():
+        if claude_settings.is_file() and not is_path_or_parent_symlink(claude_settings, boundary=home):
             unregistered = unconfigure_claude_guardrail(claude_settings)
             if unregistered:
                 print(f"  ✓ Đã gỡ bỏ đăng ký PreToolUse hook khỏi: {claude_settings}")

@@ -36,16 +36,40 @@ $targetRef = if ($env:HUYNEX_REF) { $env:HUYNEX_REF } else { "main" }
 Write-Host "▶ [1/3] Đang đồng bộ kho mã nguồn HuyNex Agent Kit (ref: $targetRef)..." -ForegroundColor Green
 if (Test-Path (Join-Path $installDir ".git")) {
     git -C $installDir fetch --depth 1 origin $targetRef
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "❌ Lỗi: git fetch thất bại."
+        exit $LASTEXITCODE
+    }
     git -C $installDir checkout --force FETCH_HEAD
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "❌ Lỗi: git checkout thất bại."
+        exit $LASTEXITCODE
+    }
 } else {
     New-Item -ItemType Directory -Force -Path (Split-Path $installDir) | Out-Null
     git clone --depth 1 $repoUrl $installDir
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "❌ Lỗi: git clone thất bại."
+        exit $LASTEXITCODE
+    }
     if ($targetRef -ne "main") {
         git -C $installDir fetch --depth 1 origin $targetRef
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "❌ Lỗi: git fetch thất bại."
+            exit $LASTEXITCODE
+        }
         git -C $installDir checkout --force FETCH_HEAD
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "❌ Lỗi: git checkout thất bại."
+            exit $LASTEXITCODE
+        }
     }
 }
 $installedSha = (git -C $installDir rev-parse --short HEAD)
+if (-not $installedSha) {
+    Write-Error "❌ Lỗi: Không thể xác định commit SHA sau khi đồng bộ kho mã nguồn."
+    exit 1
+}
 Write-Host "  ✓ Đã khóa nguồn tại commit: $installedSha (Set `$env:HUYNEX_REF='<tag|sha>' để cố định phiên bản)" -ForegroundColor Cyan
 
 # 3. Kích hoạt cài đặt qua Python Lifecycle Engine
