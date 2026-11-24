@@ -46,7 +46,7 @@ def run_benchmark():
     print(f"[1] Test Suite Distillation:")
     print(f"    Raw:       {test_stats['chars_in']} chars (~{test_stats['tokens_in']} tokens)")
     print(f"    Distilled: {test_stats['chars_out']} chars (~{test_stats['tokens_out']} tokens)")
-    print(f"    Reduction: {test_stats['reduction_pct']}%")
+    print(f"    Reduction: {test_stats['reduction_pct']}% (Target: >= 70%)")
     print(f"    Conserved: {test_stats['conservation_passed']} (Errors: {test_stats['errors_in']} -> {test_stats['errors_out']})")
 
     # 2. Git Diff Benchmark
@@ -65,10 +65,18 @@ def run_benchmark():
     print(f"\n[2] Git Diff Distillation:")
     print(f"    Raw:       {diff_stats['chars_in']} chars (~{diff_stats['tokens_in']} tokens)")
     print(f"    Distilled: {diff_stats['chars_out']} chars (~{diff_stats['tokens_out']} tokens)")
-    print(f"    Reduction: {diff_stats['reduction_pct']}%")
+    print(f"    Reduction: {diff_stats['reduction_pct']}% (Target: >= 40%)")
     print(f"    Conserved: {diff_stats['conservation_passed']} (Errors: {diff_stats['errors_in']} -> {diff_stats['errors_out']})")
 
-    print("\n✓ Acceptance Criteria Met: All benchmarks achieve >= 60% token reduction and 100% error preservation.")
+    test_passed = test_stats['reduction_pct'] >= 70.0 and test_stats['conservation_passed']
+    diff_passed = diff_stats['reduction_pct'] >= 40.0 and diff_stats['conservation_passed']
+
+    if test_passed and diff_passed:
+        print(f"\n✓ Acceptance Criteria Met: Test logs reduced by {test_stats['reduction_pct']}% (>=70%), Git diffs reduced by {diff_stats['reduction_pct']}% (>=40%), 100% error signatures conserved.")
+        return True
+    else:
+        print(f"\n❌ Benchmark FAILED: Verification criteria not met (test_ok={test_passed}, diff_ok={diff_passed}).")
+        return False
 
 
 def main():
@@ -80,6 +88,7 @@ def main():
     parser.add_argument("--stats", action="store_true", help="Show token reduction and conservation metrics")
     parser.add_argument("--type", choices=["test", "git", "generic"], default="generic", help="Force specific distiller")
     parser.add_argument("--diff", action="store_true", help="Shortcut for --type git (distill git diff)")
+    parser.add_argument("--fail-on-error", action="store_true", help="Exit with code 1 if errors or failures are detected in stream")
     parser.add_argument("--benchmark", action="store_true", help="Run self-audit benchmark")
     parser.add_argument("--version", action="version", version="huynex-distill 1.0.0 (HuyNex ADOS)")
 
@@ -89,8 +98,8 @@ def main():
     args = parser.parse_args()
 
     if args.benchmark:
-        run_benchmark()
-        sys.exit(0)
+        ok = run_benchmark()
+        sys.exit(0 if ok else 1)
 
     distiller_type = "git" if args.diff else args.type
 
@@ -149,6 +158,9 @@ def main():
             f"\n[distill stats] {stats['chars_in']} -> {stats['chars_out']} chars "
             f"(-{stats['reduction_pct']}%), errors: {stats['errors_in']} -> {stats['errors_out']}\n"
         )
+
+    if args.fail_on_error and stats["errors_in"] > 0:
+        exit_code = 1
 
     sys.exit(exit_code)
 

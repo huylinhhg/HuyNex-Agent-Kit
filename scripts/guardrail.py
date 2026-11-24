@@ -81,20 +81,49 @@ def split_compound_commands(cmd_str: str) -> list[str]:
 
 
 def extract_command_substitutions(cmd_str: str) -> list[str]:
-    """Trích xuất các câu lệnh con bên trong $(...) hoặc `...`."""
-    subs = re.findall(r"\$\((.*?)\)|`([^`]+)`", cmd_str)
+    """Trích xuất các câu lệnh con bên trong $(...) hoặc `...`, hỗ trợ lồng nhau (nested)."""
     res = []
-    for s in subs:
-        inner = (s[0] or s[1]).strip()
-        if inner:
-            res.append(inner)
+    i = 0
+    n = len(cmd_str)
+    while i < n:
+        if cmd_str[i:i+2] == "$(":
+            start = i + 2
+            depth = 1
+            i = start
+            while i < n and depth > 0:
+                if cmd_str[i:i+2] == "$(":
+                    depth += 1
+                    i += 2
+                    continue
+                elif cmd_str[i] == "(":
+                    depth += 1
+                elif cmd_str[i] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        inner = cmd_str[start:i].strip()
+                        if inner:
+                            res.append(inner)
+                            res.extend(extract_command_substitutions(inner))
+                        break
+                i += 1
+        elif cmd_str[i] == "`":
+            start = i + 1
+            i = start
+            while i < n and cmd_str[i] != "`":
+                i += 1
+            if i < n and cmd_str[i] == "`":
+                inner = cmd_str[start:i].strip()
+                if inner:
+                    res.append(inner)
+                    res.extend(extract_command_substitutions(inner))
+        i += 1
     return res
 
 
 def evaluate_single_command(cmd_segment: str, workspace_root: Path, depth: int = 0) -> tuple[bool, str]:
     """Phân tích một lệnh đơn qua shlex. Hỗ trợ đệ quy eval, subshell và command substitutions."""
     if depth > 5:
-        return False, ""
+        return True, "Chặn đứng: Độ sâu câu lệnh hoặc lồng nhau (eval/subshell/substitution) vượt quá giới hạn an toàn (depth > 5)."
 
     try:
         tokens = shlex.split(cmd_segment)
@@ -247,8 +276,10 @@ def main():
         if not raw_input.strip():
             sys.exit(0)
         data = json.loads(raw_input)
-    except Exception:
-        sys.exit(0)
+    except Exception as e:
+        # P1 FAIL-SAFE: Nếu stdin có dữ liệu nhưng không parse được JSON hợp lệ, chặn đứng để phòng ngừa bypass
+        sys.stderr.write(f"\n🛑 [HUYNEX GUARDRAIL BLOCKED] Malformed hook JSON input: {e}. Fail-closed for security.\n")
+        sys.exit(2)
 
     command = data.get("tool_input", {}).get("command", "")
     if not command:

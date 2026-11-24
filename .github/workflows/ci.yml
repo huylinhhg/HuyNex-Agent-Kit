@@ -52,3 +52,7 @@ jobs:
           python scripts/install.py --all
           python scripts/install.py --doctor
           python scripts/install.py --uninstall
+
+      - name: Run Multi-Agent Runtime Integration Smoke Test
+        run: |
+          python scripts/ci_multi_agent_smoke.py

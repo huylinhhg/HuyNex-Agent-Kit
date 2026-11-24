@@ -151,6 +151,36 @@ class TestConservationGate(unittest.TestCase):
         self.assertEqual(output, raw)
         self.assertIn("FALLBACK_TRIGGERED", stats.get("conservation_warning", ""))
 
+    def test_distiller_benchmark_acceptance_criteria_assertion(self):
+        """P1 Test: Runs huynex-distill --benchmark and verifies dynamic acceptance assertions."""
+        import subprocess
+        bin_script = os.path.abspath(os.path.join(os.path.dirname(__file__), "../bin/huynex-distill"))
+        res = subprocess.run(
+            [sys.executable, bin_script, "--benchmark"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace"
+        )
+        self.assertEqual(res.returncode, 0)
+        self.assertIn("Acceptance Criteria Met", res.stdout)
+        self.assertIn("Test logs reduced by", res.stdout)
+        self.assertIn("Git diffs reduced by", res.stdout)
+
+    def test_distiller_pipe_fail_on_error(self):
+        """P1 Test: Verifies that --fail-on-error exits with code 1 when error markers are present."""
+        import subprocess
+        bin_script = os.path.abspath(os.path.join(os.path.dirname(__file__), "../bin/huynex-distill"))
+        res = subprocess.run(
+            [sys.executable, bin_script, "--fail-on-error"],
+            input="FAIL: test_something_broke\nAssertionError: Expected 1 got 2",
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace"
+        )
+        self.assertEqual(res.returncode, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

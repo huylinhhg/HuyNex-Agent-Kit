@@ -22,6 +22,9 @@ from install import (
     configure_claude_guardrail,
     unconfigure_claude_guardrail,
     load_manifest,
+    format_for_cursor_mdc,
+    format_for_claude_rule,
+    preserve_user_modified_file,
     BEGIN_TAG,
     END_TAG,
 )
@@ -155,6 +158,65 @@ class TestDataSafetyAndNonDestructiveUninstall(unittest.TestCase):
             registered = configure_claude_guardrail(settings_file, hook_script, dry_run=False)
             self.assertFalse(registered)
             self.assertEqual(settings_file.read_text(), corrupt_content)
+
+    def test_archive_naming_zero_collision_same_second(self):
+        """P0-02 Test: Multiple files with identical basename SKILL.md archived simultaneously must not collide."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            home = Path(tmp_dir)
+            p1 = home / "skill_a" / "SKILL.md"
+            p2 = home / "skill_b" / "SKILL.md"
+            p3 = home / "skill_c" / "SKILL.md"
+
+            p1.parent.mkdir(parents=True, exist_ok=True)
+            p2.parent.mkdir(parents=True, exist_ok=True)
+            p3.parent.mkdir(parents=True, exist_ok=True)
+
+            p1.write_text("# Skill A Content", encoding="utf-8")
+            p2.write_text("# Skill B Content", encoding="utf-8")
+            p3.write_text("# Skill C Content", encoding="utf-8")
+
+            a1 = preserve_user_modified_file(p1, home)
+            a2 = preserve_user_modified_file(p2, home)
+            a3 = preserve_user_modified_file(p3, home)
+
+            # Assert all 3 returned archive paths are distinct files
+            self.assertNotEqual(a1, a2)
+            self.assertNotEqual(a2, a3)
+            self.assertNotEqual(a1, a3)
+
+            # Assert all 3 exist on disk and have distinct contents preserved
+            self.assertTrue(a1.is_file())
+            self.assertTrue(a2.is_file())
+            self.assertTrue(a3.is_file())
+            self.assertEqual(a1.read_text(encoding="utf-8"), "# Skill A Content")
+            self.assertEqual(a2.read_text(encoding="utf-8"), "# Skill B Content")
+            self.assertEqual(a3.read_text(encoding="utf-8"), "# Skill C Content")
+
+    def test_cursor_mdc_and_claude_rule_formatting(self):
+        """P1 Test: Validates Cursor .mdc YAML syntax and Claude Code rule scoping frontmatter."""
+        mdc_content = format_for_cursor_mdc("01-communication.md", "# Communication\nContent")
+        self.assertIn('globs: "*"', mdc_content)
+        self.assertNotIn("globs: *", mdc_content.replace('globs: "*"', ""))
+
+        # Check if PyYAML can parse frontmatter if available
+        try:
+            import yaml
+            # Extract frontmatter between --- and ---
+            parts = mdc_content.split("---")
+            self.assertTrue(len(parts) >= 3)
+            parsed_yaml = yaml.safe_load(parts[1])
+            self.assertEqual(parsed_yaml.get("globs"), "*")
+            self.assertEqual(parsed_yaml.get("alwaysApply"), True)
+        except ImportError:
+            pass
+
+        # Test Claude rule scoping
+        scoped_code = format_for_claude_rule("03-code-engineering.md", "# Code\nContent")
+        self.assertIn("paths:", scoped_code)
+        self.assertIn('"**/*.py"', scoped_code)
+
+        unscoped = format_for_claude_rule("01-communication.md", "# Comm\nContent")
+        self.assertNotIn("paths:", unscoped)
 
 
 if __name__ == "__main__":

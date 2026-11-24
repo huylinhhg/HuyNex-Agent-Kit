@@ -203,13 +203,65 @@ def format_for_cursor_mdc(rule_name: str, md_content: str) -> str:
     """Đóng gói rule module thành định dạng chuẩn .mdc của Cursor với YAML frontmatter."""
     clean_title = rule_name.replace(".md", "").replace("-", " ").title()
     frontmatter = (
-        f"---\n"
-        f"description: HuyNex Governance Rule - {clean_title}\n"
-        f"globs: *\n"
-        f"alwaysApply: true\n"
-        f"---\n\n"
+        "---\n"
+        f"description: \"HuyNex Governance Rule - {clean_title}\"\n"
+        "globs: \"*\"\n"
+        "alwaysApply: true\n"
+        "---\n\n"
     )
     return frontmatter + md_content
+
+
+def format_for_claude_rule(rule_name: str, md_content: str) -> str:
+    """Bổ sung scope paths cho Claude Code theo chuẩn Anthropic để tránh loãng context."""
+    if "03-code-engineering" in rule_name:
+        frontmatter = (
+            "---\n"
+            "paths:\n"
+            "  - \"**/*.py\"\n"
+            "  - \"**/*.js\"\n"
+            "  - \"**/*.ts\"\n"
+            "  - \"**/*.jsx\"\n"
+            "  - \"**/*.tsx\"\n"
+            "  - \"**/*.go\"\n"
+            "  - \"**/*.rs\"\n"
+            "  - \"**/*.sh\"\n"
+            "  - \"**/*.bash\"\n"
+            "  - \"**/*.zsh\"\n"
+            "---\n\n"
+        )
+        return frontmatter + md_content
+    elif "05-verification" in rule_name:
+        frontmatter = (
+            "---\n"
+            "paths:\n"
+            "  - \"**/*.py\"\n"
+            "  - \"**/*.js\"\n"
+            "  - \"**/*.ts\"\n"
+            "  - \"tests/**\"\n"
+            "  - \"test/**\"\n"
+            "  - \"TASK.md\"\n"
+            "  - \"SPEC.md\"\n"
+            "---\n\n"
+        )
+        return frontmatter + md_content
+    return md_content
+
+
+def preserve_user_modified_file(p: Path, home: Path) -> Path:
+    """Bảo tồn an toàn tuyệt đối tệp do người dùng chỉnh sửa, chống trùng tên hoặc ghi đè."""
+    user_archive_dir = home / ".huynex/preserved_user_modified"
+    user_archive_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    path_hash = hashlib.sha256(str(p.resolve()).encode("utf-8")).hexdigest()[:8]
+    base_name = f"{ts}_{path_hash}_{p.name}"
+    archive_file = user_archive_dir / base_name
+    counter = 1
+    while archive_file.exists():
+        archive_file = user_archive_dir / f"{ts}_{path_hash}_{counter}_{p.name}"
+        counter += 1
+    shutil.copy2(p, archive_file)
+    return archive_file
 
 
 def configure_claude_guardrail(settings_file: Path, hook_script: Path, dry_run: bool = False) -> bool:
@@ -376,6 +428,10 @@ def cmd_install(is_all: bool, dry_run: bool):
                     dst = c_info["rules_dir"] / target_name
                     mdc_text = format_for_cursor_mdc(rule_file.name, raw_rule_text)
                     rule_bytes = mdc_text.encode("utf-8")
+                elif c_name == "Claude Code":
+                    dst = c_info["rules_dir"] / rule_file.name
+                    claude_text = format_for_claude_rule(rule_file.name, raw_rule_text)
+                    rule_bytes = claude_text.encode("utf-8")
                 else:
                     dst = c_info["rules_dir"] / rule_file.name
                     rule_bytes = raw_rule_bytes
@@ -444,13 +500,23 @@ def cmd_install(is_all: bool, dry_run: bool):
         mode = 0o755 if "guardrail" in dst.name else None
         atomic_write(dst, new_b, mode=mode)
 
-        # Ghi nhận trạng thái sở hữu tệp (P0 Data Safety)
+        # Ghi nhận trạng thái sở hữu tệp (P0 Data Safety - Immutable Ownership)
+        prev_entry = active_entries.get(str(dst), {})
+        if prev_entry and "existed_prior" in prev_entry:
+            initial_existed_prior = prev_entry["existed_prior"]
+            initial_backup_file = prev_entry.get("backup_file")
+            initial_sha_before = prev_entry.get("sha256_before")
+        else:
+            initial_existed_prior = existed
+            initial_backup_file = None
+            initial_sha_before = None
+
         active_entries[str(dst)] = {
             "type": act,
-            "managed_mode": "injected_block" if act == "ROOT_INSTRUCTION" and existed else "managed_file",
-            "existed_prior": existed,
-            "backup_file": bk_file_str or active_entries.get(str(dst), {}).get("backup_file"),
-            "sha256_before": sha_before or active_entries.get(str(dst), {}).get("sha256_before"),
+            "managed_mode": "injected_block" if act == "ROOT_INSTRUCTION" and initial_existed_prior else "managed_file",
+            "existed_prior": initial_existed_prior,
+            "backup_file": initial_backup_file or bk_file_str,
+            "sha256_before": initial_sha_before or sha_before,
             "sha256_installed": hashlib.sha256(new_b).hexdigest(),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -634,6 +700,15 @@ def cmd_uninstall():
 
         # TRƯỜNG HỢP 2: Tệp skill/rule ĐÃ TỒN TẠI TỪ TRƯỚC khi cài đặt HuyNex
         elif existed_prior and managed_mode == "managed_file":
+            installed_sha = meta.get("sha256_installed")
+            current_sha = sha256_file(p)
+
+            # P0-01 DATA SAFETY: Nếu người dùng đã chỉnh sửa sau khi cài đặt, BẮT BUỘC lưu trữ bảo tồn!
+            if installed_sha and current_sha and current_sha != installed_sha:
+                archived = preserve_user_modified_file(p, home)
+                preserved_count += 1
+                print(f"  🛡️ Tệp gốc {p} đã được chỉnh sửa sau khi cài: Bảo tồn tại {archived}")
+
             if backup_file and Path(backup_file).is_file():
                 bk_bytes = Path(backup_file).read_bytes()
                 atomic_write(p, bk_bytes)
@@ -647,15 +722,12 @@ def cmd_uninstall():
             installed_sha = meta.get("sha256_installed")
             current_sha = sha256_file(p)
 
-            # Kiểm tra xem người dùng có sửa đổi nội dung tệp sau khi cài đặt không
+            # P0-02 DATA SAFETY: Kiểm tra xem người dùng có sửa đổi nội dung tệp sau khi cài đặt không
             if installed_sha and current_sha and current_sha != installed_sha:
-                # Bảo vệ file người dùng đã chỉnh sửa
-                user_archive_dir = home / ".huynex/preserved_user_modified"
-                user_archive_dir.mkdir(parents=True, exist_ok=True)
-                archive_file = user_archive_dir / f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{p.name}"
-                shutil.copy2(p, archive_file)
+                # Bảo vệ file người dùng đã chỉnh sửa với tên chống trùng lặp tuyệt đối
+                archived = preserve_user_modified_file(p, home)
                 preserved_count += 1
-                print(f"  🛡️ Tệp {p} đã được người dùng chỉnh sửa sau khi cài: Bảo tồn tại {archive_file} và giữ nguyên.")
+                print(f"  🛡️ Tệp {p} đã được người dùng chỉnh sửa sau khi cài: Bảo tồn tại {archived} và giữ nguyên.")
             else:
                 try:
                     p.unlink(missing_ok=True)

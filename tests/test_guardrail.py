@@ -143,5 +143,37 @@ class TestSecurityGuardrails(unittest.TestCase):
             self.assertEqual(code, 0, f"Expected safe command to pass, but got code {code}: {cmd}")
 
 
+    def test_blocks_nested_command_substitutions(self):
+        """P1 Test: Blocks deeply nested command substitutions like $(echo $(git push --force))."""
+        code, err = self.run_guardrail("echo $(echo $(git push --force))")
+        self.assertEqual(code, 2)
+        self.assertIn("BLOCKED", err)
+
+        code, err = self.run_guardrail("echo `echo $(git push --force)`")
+        self.assertEqual(code, 2)
+
+    def test_recursion_limit_fails_closed(self):
+        """P1 Test: Ensures that excessively nested eval commands fail-closed with exit code 2."""
+        excessive_eval = "eval eval eval eval eval eval echo safe"
+        code, err = self.run_guardrail(excessive_eval)
+        self.assertEqual(code, 2)
+        self.assertIn("BLOCKED", err)
+
+    def test_malformed_json_fails_closed(self):
+        """P1 Test: Non-empty malformed stdin must fail-closed with exit code 2."""
+        p = subprocess.Popen(
+            [sys.executable, str(GUARDRAIL_SCRIPT)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace"
+        )
+        out, err = p.communicate("{ this is invalid json payload ;;")
+        self.assertEqual(p.returncode, 2)
+        self.assertIn("Malformed hook JSON input", err)
+
+
 if __name__ == "__main__":
     unittest.main()

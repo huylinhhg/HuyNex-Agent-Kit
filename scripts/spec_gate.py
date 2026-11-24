@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -75,18 +76,37 @@ def run_project_tests() -> tuple[str | None, bool, str]:
     """Tự động phát hiện và chạy test dự án."""
     if Path("package.json").is_file():
         try:
-            pkg = json.loads(Path("package.json").read_text())
+            pkg = json.loads(Path("package.json").read_text(encoding="utf-8", errors="replace"))
             if "test" in pkg.get("scripts", {}):
-                res = subprocess.run(["npm", "test"], capture_output=True, text=True)
+                res = subprocess.run(
+                    ["npm", "test"],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace"
+                )
                 return "npm test", res.returncode == 0, res.stdout + res.stderr
         except Exception:
             pass
     elif Path("Cargo.toml").is_file():
-        res = subprocess.run(["cargo", "test"], capture_output=True, text=True)
+        res = subprocess.run(
+            ["cargo", "test"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace"
+        )
         return "cargo test", res.returncode == 0, res.stdout + res.stderr
     elif Path("pyproject.toml").is_file() or Path("setup.py").is_file() or Path("tests").is_dir():
-        cmd = ["pytest"] if subprocess.run(["which", "pytest"], capture_output=True).returncode == 0 else ["python3", "-m", "unittest"]
-        res = subprocess.run(cmd, capture_output=True, text=True)
+        has_pytest = shutil.which("pytest") is not None
+        cmd = ["pytest"] if has_pytest else [sys.executable, "-m", "unittest"]
+        res = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace"
+        )
         return " ".join(cmd), res.returncode == 0, res.stdout + res.stderr
     return None, False, ""
 

@@ -45,7 +45,10 @@ def read_bounded_stream(stream, max_bytes: int = MAX_STREAM_BYTES) -> tuple[str,
 
     text = "".join(chunks)
     if truncated:
-        text += "\n\n[HUYNEX DISTILL WARNING: Stream ceiling of 20MB reached. Truncated safely to prevent memory exhaustion]\n"
+        text += (
+            "\n\n[HUYNEX DISTILL WARNING: Stream ceiling of 20MB reached. Truncated safely to prevent memory exhaustion. "
+            "Note: Error conservation is audited only within the captured 20MB window; errors beyond the cutoff cannot be audited.]\n"
+        )
     return text, truncated
 
 
@@ -54,7 +57,10 @@ def enforce_buffer_cap(text: str, max_bytes: int = MAX_STREAM_BYTES) -> str:
     encoded = text.encode("utf-8", errors="ignore")
     if len(encoded) > max_bytes:
         truncated = encoded[:max_bytes].decode("utf-8", errors="ignore")
-        return truncated + "\n\n[HUYNEX DISTILL WARNING: Stream capped at 20MB to prevent memory exhaustion]\n"
+        return (
+            truncated + "\n\n[HUYNEX DISTILL WARNING: Stream capped at 20MB to prevent memory exhaustion. "
+            "Note: Error conservation is audited only within the captured 20MB window; errors beyond the cutoff cannot be audited.]\n"
+        )
     return text
 
 
