@@ -18,7 +18,7 @@ To maintain strict engineering honesty, we distinguish between three levels of v
 | Agent Client | Skills Support | Rules Engine | Hook Enforcement | Verification Tier |
 |---|---|---|---|---|
 | **Claude Code** | Native (`~/.claude/skills/`) | 9 Modular Rules (`~/.claude/rules/`) with path-scoping | Native `PreToolUse` (`guardrail.py`) | **FILESYSTEM_INTEGRATION_VERIFIED** + **AGENT_RUNTIME_VERIFIED** |
-| **Google Antigravity** | Native (`~/.gemini/config/skills/`) | Root Instruction (`~/.gemini/GEMINI.md`) | Soft Prompt Governance & System Rules | **FILESYSTEM_INTEGRATION_VERIFIED** + **AGENT_RUNTIME_VERIFIED** |
+| **Google Antigravity** | Native (`~/.gemini/config/skills/`) | Root Instruction (`~/.gemini/GEMINI.md`) | Soft Prompt Governance & System Rules | **FILESYSTEM_INTEGRATION_VERIFIED** |
 | **OpenAI Codex** | Native (`~/.codex/skills/`) | Root Instruction (`~/.codex/AGENTS.md`) | Soft Prompt Governance | **FILESYSTEM_INTEGRATION_VERIFIED** & **FORMAT_VERIFIED** |
 | **Cursor** | Workspace (`.cursor/rules/`) | Native Rules (`.cursor/rules/*.mdc`) | Soft Prompt Governance | **FILESYSTEM_INTEGRATION_VERIFIED** & **FORMAT_VERIFIED** (`globs: "*"`) |
 | **Shared Agent Hub** | Native (`~/.agents/skills/`) | Universal (`~/.agents/rules/`) | Global fallback | **FILESYSTEM_INTEGRATION_VERIFIED** |

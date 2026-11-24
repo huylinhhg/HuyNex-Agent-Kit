@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/huylinhhg/HuyNex-Agent-Kit/actions/workflows/ci.yml/badge.svg)](https://github.com/huylinhhg/HuyNex-Agent-Kit/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version: 0.4.0](https://img.shields.io/badge/Version-0.4.0-green.svg)](VERSION)
+[![Version: 0.4.1](https://img.shields.io/badge/Version-0.4.1-green.svg)](VERSION)
 [![Platform: macOS | Linux | Windows](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-orange.svg)](#)
 
 [ [English](README.md) | **Tiếng Việt** ]
@@ -69,10 +69,12 @@ Tách biệt thành các module chuyên biệt, tương thích cú pháp `@impor
 
 Đo lường bằng bộ dữ liệu kiểm thử thực tế có thể tái hiện:
 
-| Tác vụ | Dung lượng Gốc (Tokens) | Sau Chưng Cất (Tokens) | Tỷ lệ Tiết Kiệm | Khả năng Giữ Lỗi |
+| Tác vụ | Dung lượng Gốc (Est. Tokens) | Sau Chưng Cất (Est. Tokens) | Tỷ lệ Giảm Ký Tự* | Khả năng Giữ Lỗi |
 |---|---|---|---|---|
 | **Bộ test Vitest (120 tests)** | 6.376 chars (~1.594) | 284 chars (~71) | **95.5%** | **100% (4/4 lỗi giữ nguyên)** |
 | **Git Diff (5 file thay đổi)** | 5.966 chars (~1.491) | 1.736 chars (~434) | **70.9%** | **100% (Toàn bộ thay đổi giữ nguyên)** |
+
+*(\*Ghi chú đo lường: Chỉ số đo trực tiếp tỷ lệ giảm ký tự thực tế. Ước tính token sử dụng quy chuẩn ~4 ký tự/token; số token BPE thực tế phụ thuộc tokenizer của từng mô hình).*
 
 Tự chạy kiểm chứng trên máy:
 ```bash

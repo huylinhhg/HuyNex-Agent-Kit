@@ -10,6 +10,7 @@ import sys
 import json
 import time
 import shutil
+import hashlib
 import tempfile
 import unittest
 import subprocess
@@ -20,7 +21,14 @@ SCRIPTS_DIR = REPO_ROOT / "scripts"
 INSTALL_PY = SCRIPTS_DIR / "install.py"
 
 sys.path.insert(0, str(REPO_ROOT))
-from scripts.install import LifecycleLock, LifecycleLockError, load_manifest, sha256_file
+from scripts.install import (
+    LifecycleLock,
+    LifecycleLockError,
+    load_manifest,
+    sha256_file,
+    cmd_install,
+    cmd_uninstall,
+)
 
 
 class TestConcurrencySubprocess(unittest.TestCase):
@@ -149,36 +157,225 @@ with LifecycleLock(home):
         self.assertEqual(res.returncode, 0, f"Install failed after SIGKILL: {res.stdout}\n{res.stderr}")
 
     def test_pre_mutation_toctou_absent_to_present_surprise(self):
-        """P0-02: If a file did not exist during planning, but appears right before mutation,
-        the installer detects it, captures an immutable backup, assigns existed_prior=True,
-        and upon uninstall restores the user's surprise file."""
-        from scripts.install import cmd_install, cmd_uninstall
-
+        """TEST-01: True TOCTOU synchronization test:
+        1. Target file does NOT exist during planning.
+        2. A controlled hook injects user file between planning and mutation.
+        3. Installer detects unexpected disk presence, captures immutable backup,
+           and marks ownership as EXISTED_PRIOR_USER.
+        4. Uninstall restores user's surprise file 100% byte-for-byte."""
         surprise_file = self.home / ".claude/skills/data-conservation-gate/SKILL.md"
         surprise_content = b"---\nname: surprise\n---\n# User Surprise File Created Between Plan And Write\n"
 
-        # Intercept write_immutable_backup_file or test through simulated pre-creation:
-        # If the file already exists on disk when install starts, it's existed_prior.
-        # But here we simulate the exact TOCTOU:
-        # create surprise file right before install executes
-        surprise_file.parent.mkdir(parents=True, exist_ok=True)
-        surprise_file.write_bytes(surprise_content)
+        # 1. Target file MUST NOT exist during planning
+        self.assertFalse(surprise_file.exists(), "Target file must not exist before planning")
 
-        # Install
-        self.assertTrue(cmd_install(is_all=True, dry_run=False))
+        # 2. Synchronization hook fires between planning and mutation loop
+        hook_fired = False
 
-        # Check manifest
+        def inject_user_file_after_planning():
+            nonlocal hook_fired
+            surprise_file.parent.mkdir(parents=True, exist_ok=True)
+            surprise_file.write_bytes(surprise_content)
+            hook_fired = True
+
+        # 3. Execute install with synchronization hook
+        success = cmd_install(is_all=True, dry_run=False, pre_mutation_hook=inject_user_file_after_planning)
+        self.assertTrue(success, "Install must succeed and handle pre-mutation surprise file")
+        self.assertTrue(hook_fired, "Hook must execute between plan and write")
+
+        # 4. Verify manifest records EXISTED_PRIOR_USER and captures immutable backup
         manifest_file = self.home / ".huynex/installed_manifest.json"
+        self.assertTrue(manifest_file.is_file())
         manifest = load_manifest(manifest_file)
         entry = manifest["entries"].get(str(surprise_file))
-        self.assertIsNotNone(entry)
-        self.assertTrue(entry.get("existed_prior"))
+        self.assertIsNotNone(entry, "Surprise file must be recorded in manifest")
+        self.assertTrue(entry.get("existed_prior"), "Must be marked existed_prior=True")
         self.assertEqual(entry.get("ownership"), "EXISTED_PRIOR_USER")
-        self.assertIsNotNone(entry.get("backup_file"))
+        self.assertIsNotNone(entry.get("backup_file"), "Must have captured backup file")
+        self.assertEqual(entry.get("sha256_before"), hashlib.sha256(surprise_content).hexdigest())
 
-        # Uninstall must restore the surprise content
+        # Backup file on disk must match surprise content byte-for-byte
+        bk_path = Path(entry["backup_file"])
+        self.assertTrue(bk_path.is_file())
+        self.assertEqual(bk_path.read_bytes(), surprise_content)
+
+        # 5. Uninstall must restore surprise file byte-for-byte
         self.assertTrue(cmd_uninstall())
-        self.assertEqual(surprise_file.read_bytes(), surprise_content)
+        self.assertEqual(surprise_file.read_bytes(), surprise_content, "User file must be restored byte-for-byte")
+
+    def test_kernel_lock_inode_stability_and_no_unlink(self):
+        """TEST-02: Lockfile inode remains permanent on disk across acquisitions;
+        lockfile is never unlinked, avoiding inode recycling race."""
+        lock_file = self.home / ".huynex/.lifecycle.lock"
+
+        # 1. First acquisition
+        with LifecycleLock(self.home) as lock1:
+            self.assertTrue(lock1._acquired)
+            stat1 = lock_file.stat()
+            ino1 = stat1.st_ino
+
+        # 2. After release, lockfile MUST persist on disk
+        self.assertTrue(lock_file.exists(), "Lockfile must NOT be unlinked upon release")
+        stat_after = lock_file.stat()
+        self.assertEqual(stat_after.st_ino, ino1, "Lockfile inode must remain identical after release")
+
+        # Payload indicates released status, not active lock
+        payload = json.loads(lock_file.read_text(encoding="utf-8"))
+        self.assertEqual(payload.get("status"), "released")
+
+        # 3. Second acquisition on same path must use the exact same inode
+        with LifecycleLock(self.home) as lock2:
+            self.assertTrue(lock2._acquired)
+            stat2 = lock_file.stat()
+            self.assertEqual(stat2.st_ino, ino1, "Lockfile inode must remain identical across sessions")
+
+        self.assertTrue(lock_file.exists())
+
+    def test_kernel_lock_sequential_handoff_and_contention(self):
+        """TEST-02: Real independent subprocesses demonstrate mutual exclusion,
+        clean handoff after release, and rejection during hold."""
+        lock_file = self.home / ".huynex/.lifecycle.lock"
+
+        child_code = f"""
+import sys, time, pathlib
+sys.path.insert(0, r"{REPO_ROOT}")
+from scripts.install import LifecycleLock
+home = pathlib.Path(r"{self.home}")
+with LifecycleLock(home):
+    sys.stdout.write("READY\\n")
+    sys.stdout.flush()
+    sys.stdin.readline()
+sys.stdout.write("RELEASED\\n")
+sys.stdout.flush()
+"""
+        proc = subprocess.Popen(
+            [sys.executable, "-c", child_code],
+            env=self.env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+        ready_line = proc.stdout.readline().strip()
+        self.assertEqual(ready_line, "READY", "Child process must acquire lock")
+
+        # Attempt to acquire lock in parent: MUST FAIL immediately
+        with self.assertRaises(LifecycleLockError):
+            with LifecycleLock(self.home):
+                pass
+
+        # Attempt to run install in another subprocess: MUST FAIL with exit code 1
+        res = subprocess.run(
+            [sys.executable, str(INSTALL_PY), "--all"],
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertEqual(res.returncode, 1, "Concurrent install process must be blocked with exit code 1")
+
+        # Tell child to release lock
+        proc.stdin.write("GO\n")
+        proc.stdin.flush()
+        released_line = proc.stdout.readline().strip()
+        self.assertEqual(released_line, "RELEASED")
+        proc.wait(timeout=5)
+
+        # Now parent must acquire lock immediately and smoothly
+        with LifecycleLock(self.home) as parent_lock:
+            self.assertTrue(parent_lock._acquired, "Parent must acquire lock after child release")
+
+        # Lockfile exists but is not misidentified as active
+        self.assertTrue(lock_file.exists())
+        self.assertTrue(cmd_install(is_all=True, dry_run=False))
+
+    def test_lockfile_direct_symlink_corruption_prevented(self):
+        """TEST-03: Direct symlink at .lifecycle.lock pointing to external file:
+        Installer rejects operation, external file is untouched byte-for-byte,
+        no invalid manifest/backup written, exit code != 0."""
+        victim_dir = Path(tempfile.mkdtemp(prefix="huynex_victim_"))
+        try:
+            victim_file = victim_dir / "victim_data.db"
+            victim_content = b"CRITICAL_USER_DATABASE_DO_NOT_CORRUPT_OR_TRUNCATE_9876543210"
+            victim_file.write_bytes(victim_content)
+
+            lock_dir = self.home / ".huynex"
+            lock_dir.mkdir(parents=True, exist_ok=True)
+            lock_symlink = lock_dir / ".lifecycle.lock"
+
+            try:
+                os.symlink(str(victim_file), str(lock_symlink))
+            except (OSError, NotImplementedError):
+                self.skipTest("Symlinks not supported on this platform/configuration")
+
+            # 1. Attempt LifecycleLock directly
+            with self.assertRaises(LifecycleLockError):
+                with LifecycleLock(self.home):
+                    pass
+
+            # 2. Attempt install.py via subprocess CLI
+            res = subprocess.run(
+                [sys.executable, str(INSTALL_PY), "--all"],
+                env=self.env,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            # Exit code must be non-zero
+            self.assertNotEqual(res.returncode, 0, f"Installer must fail when lock is a symlink: {res.stdout}")
+            self.assertIn("Security violation", res.stdout + res.stderr)
+
+            # 3. External victim file MUST NOT be modified by a single byte!
+            self.assertEqual(victim_file.read_bytes(), victim_content, "External file must be completely untouched")
+            self.assertEqual(victim_file.stat().st_size, len(victim_content), "External file size must not change")
+
+            # 4. No manifest or backup file written
+            manifest_file = self.home / ".huynex/installed_manifest.json"
+            self.assertFalse(manifest_file.exists(), "No manifest must be written when lock fails")
+            backup_dir = self.home / ".huynex/backups"
+            self.assertFalse(backup_dir.exists(), "No backup directory must be created")
+        finally:
+            shutil.rmtree(str(victim_dir), ignore_errors=True)
+
+    def test_lockfile_ancestor_symlink_corruption_prevented(self):
+        """TEST-03: Ancestor symlink (.huynex pointing to external directory):
+        Installer rejects operation, external directory untouched, exit code != 0."""
+        external_dir = Path(tempfile.mkdtemp(prefix="huynex_ext_ancestor_"))
+        try:
+            canary_file = external_dir / "external_canary.txt"
+            canary_content = b"CANARY_SECRET_DATA_DO_NOT_TOUCH"
+            canary_file.write_bytes(canary_content)
+
+            huynex_dir = self.home / ".huynex"
+            try:
+                os.symlink(str(external_dir), str(huynex_dir))
+            except (OSError, NotImplementedError):
+                self.skipTest("Symlinks not supported on this platform/configuration")
+
+            # Attempt LifecycleLock
+            with self.assertRaises(LifecycleLockError):
+                with LifecycleLock(self.home):
+                    pass
+
+            # Attempt install via subprocess
+            res = subprocess.run(
+                [sys.executable, str(INSTALL_PY), "--all"],
+                env=self.env,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            self.assertNotEqual(res.returncode, 0, "Installer must reject ancestor symlink")
+            self.assertIn("Security violation", res.stdout + res.stderr)
+
+            # Canary file must remain untouched
+            self.assertEqual(canary_file.read_bytes(), canary_content)
+            # No files installed inside external directory
+            self.assertFalse((external_dir / "installed_manifest.json").exists())
+            self.assertFalse((external_dir / ".lifecycle.lock").exists())
+        finally:
+            shutil.rmtree(str(external_dir), ignore_errors=True)
 
 
 if __name__ == "__main__":

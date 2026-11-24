@@ -49,7 +49,7 @@ SCRIPTS_DIR = KIT_ROOT / "scripts"
 
 BEGIN_TAG = "<!-- HUYNEX_AGENT_KIT_START -->"
 END_TAG = "<!-- HUYNEX_AGENT_KIT_END -->"
-KIT_VERSION = "0.4.0"
+KIT_VERSION = "0.4.1"
 
 VALID_TYPES = {"SKILL", "RULE_MODULE", "ROOT_INSTRUCTION", "GUARDRAIL_HOOK", "UNKNOWN"}
 VALID_MANAGED_MODES = {"managed_file", "injected_block"}
@@ -117,19 +117,61 @@ class LifecycleLock:
     """
 
     def __init__(self, home: Path):
-        self.lock_path = home / ".huynex/.lifecycle.lock"
+        self.home = Path(home)
+        self.lock_dir = self.home / ".huynex"
+        self.lock_path = self.lock_dir / ".lifecycle.lock"
         self._fd: int | None = None
         self._acquired = False
 
+    def _verify_lock_path_safety(self):
+        """Verifies that lock_path and its ancestors do not traverse symlinks
+        and stay strictly within boundary (P0-02 Lockfile Symlink / External File Corruption)."""
+        if self.lock_path.is_symlink():
+            raise LifecycleLockError(
+                f"Security violation: lifecycle lock file {self.lock_path} is a symbolic link."
+            )
+        if is_path_or_parent_symlink(self.lock_path, boundary=self.home):
+            raise LifecycleLockError(
+                f"Security violation: lifecycle lock path or ancestor is a symbolic link outside boundary."
+            )
+
     def __enter__(self):
-        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        self._verify_lock_path_safety()
+        self.lock_dir.mkdir(parents=True, exist_ok=True)
+        # Re-verify after mkdir in case an ancestor was swapped
+        self._verify_lock_path_safety()
+
         if sys.platform != "win32":
             import fcntl
+            import stat
+            import errno
             while True:
+                # Use O_NOFOLLOW to atomically reject symlink targets on POSIX
+                flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
                 try:
-                    fd = os.open(str(self.lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+                    fd = os.open(str(self.lock_path), flags, 0o600)
                 except OSError as e:
+                    if e.errno in (getattr(errno, "ELOOP", 62), getattr(errno, "EMLINK", 31)) or self.lock_path.is_symlink():
+                        raise LifecycleLockError(
+                            f"Security violation: lifecycle lock file {self.lock_path} is a symbolic link."
+                        )
                     raise LifecycleLockError(f"Cannot open lifecycle lock file {self.lock_path}: {e}")
+
+                # Ensure descriptor is a regular file and matches inode
+                try:
+                    stat_res = os.fstat(fd)
+                    if not stat.S_ISREG(stat_res.st_mode):
+                        os.close(fd)
+                        raise LifecycleLockError(f"Security violation: {self.lock_path} is not a regular file.")
+                    lstat_res = os.lstat(str(self.lock_path))
+                    if stat_res.st_ino != lstat_res.st_ino or stat_res.st_dev != lstat_res.st_dev:
+                        os.close(fd)
+                        raise LifecycleLockError(
+                            f"Security violation: lock descriptor does not match inode at {self.lock_path}."
+                        )
+                except OSError as e:
+                    os.close(fd)
+                    raise LifecycleLockError(f"Cannot verify lock descriptor: {e}")
 
                 try:
                     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -142,7 +184,7 @@ class LifecycleLock:
                         "Wait for it to finish."
                     )
 
-                # Check if file was unlinked before lock was acquired (standard POSIX flock pattern)
+                # Check if file was unlinked before lock was acquired
                 try:
                     stat_res = os.fstat(fd)
                     if stat_res.st_nlink == 0:
@@ -196,6 +238,8 @@ class LifecycleLock:
         try:
             raw = self.lock_path.read_text(encoding="utf-8")
             data = json.loads(raw)
+            if data.get("status") == "released":
+                return None
             pid = data.get("pid")
             return pid if isinstance(pid, int) else None
         except Exception:
@@ -207,6 +251,7 @@ class LifecycleLock:
         try:
             payload = json.dumps({
                 "pid": os.getpid(),
+                "status": "active",
                 "acquired_at": datetime.now(timezone.utc).isoformat(),
             }).encode("utf-8")
             os.lseek(self._fd, 0, os.SEEK_SET)
@@ -221,6 +266,20 @@ class LifecycleLock:
             fd = self._fd
             self._fd = None
             self._acquired = False
+
+            # Mark lock as released before unlocking descriptor so inspection does not see active lock
+            try:
+                payload = json.dumps({
+                    "status": "released",
+                    "released_at": datetime.now(timezone.utc).isoformat(),
+                }).encode("utf-8")
+                os.lseek(fd, 0, os.SEEK_SET)
+                os.write(fd, payload)
+                os.ftruncate(fd, len(payload))
+                os.fsync(fd)
+            except OSError:
+                pass
+
             if sys.platform != "win32":
                 import fcntl
                 try:
@@ -229,10 +288,6 @@ class LifecycleLock:
                     pass
                 try:
                     os.close(fd)
-                except OSError:
-                    pass
-                try:
-                    self.lock_path.unlink(missing_ok=True)
                 except OSError:
                     pass
             else:
@@ -246,10 +301,8 @@ class LifecycleLock:
                     os.close(fd)
                 except OSError:
                     pass
-                try:
-                    self.lock_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
+            # INODE STABILITY (P0-01): NEVER UNLINK self.lock_path!
+            # The lockfile/inode remains permanent on disk across all lifecycle operations.
         return False
 
 
@@ -765,7 +818,7 @@ def save_manifest(manifest_file: Path, manifest_data: dict):
     atomic_write(manifest_file, json.dumps(manifest_data, indent=2).encode("utf-8"))
 
 
-def _run_install(home: Path, is_all: bool, dry_run: bool) -> bool:
+def _run_install(home: Path, is_all: bool, dry_run: bool, pre_mutation_hook=None) -> bool:
     clients = get_detected_clients(home)
     manifest_file = home / ".huynex/installed_manifest.json"
 
@@ -884,6 +937,10 @@ def _run_install(home: Path, is_all: bool, dry_run: bool) -> bool:
     if dry_run:
         print("\n[Dry-run] Hoàn tất kiểm tra trước. Không có thay đổi nào được ghi vào đĩa.")
         return True
+
+    # Pre-mutation synchronization / fault injection hook (TEST-01 TOCTOU)
+    if pre_mutation_hook is not None and callable(pre_mutation_hook):
+        pre_mutation_hook()
 
     backup_dir = create_unique_backup_dir(home)
     backup_records = []
@@ -1017,15 +1074,15 @@ def _run_install(home: Path, is_all: bool, dry_run: bool) -> bool:
     return True
 
 
-def cmd_install(is_all: bool, dry_run: bool) -> bool:
+def cmd_install(is_all: bool, dry_run: bool, pre_mutation_hook=None) -> bool:
     """Cài đặt với phạm vi khóa độc quyền (LifecycleLock) bao phủ toàn bộ quá trình đọc và ghi (trừ dry-run)."""
     home = Path.home()
     if dry_run:
-        return _run_install(home, is_all=is_all, dry_run=True)
+        return _run_install(home, is_all=is_all, dry_run=True, pre_mutation_hook=pre_mutation_hook)
 
     try:
         with LifecycleLock(home):
-            return _run_install(home, is_all=is_all, dry_run=False)
+            return _run_install(home, is_all=is_all, dry_run=False, pre_mutation_hook=pre_mutation_hook)
     except LifecycleLockError as e:
         print(f"\n❌ LỖI KHÓA ĐỒNG THỜI (CONCURRENT LIFECYCLE): {e}")
         return False
