@@ -71,3 +71,19 @@ This contract defines the immutable safety invariants that govern the lifecycle 
 | **INV-07** | `test_p0_corrupt_manifest_blocks_install_uninstall_and_doctor` | `tests/test_fault_injection.py` |
 | **INV-08** | `test_dry_run_check_is_idempotent_and_non_mutating` | `tests/test_installer.py` |
 | **INV-09** | `test_user_modifications_across_multiple_upgrades` | `tests/test_state_machine_lifecycle.py` |
+
+---
+
+## ⚠️ Explicit Scope Boundaries & Known Limitations
+
+1. **Windows Test Execution (64 PASS / 1 SKIP)**:
+   - On Windows, each CI matrix runner executes 65 tests resulting in 64 PASS and 1 SKIP.
+   - `test_kernel_lock_rejects_concurrent_locks_on_replaced_inode` is intentionally skipped on Windows NTFS because the Windows kernel prohibits renaming or replacing an open file handle (`ERROR_SHARING_VIOLATION`), making multi-inode replacement impossible by operating system design.
+2. **Instruction File Encoding Assumption (UTF-8 Only)**:
+   - All instruction files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`) must be UTF-8 encoded text.
+   - Files containing non-UTF-8 binary encodings (e.g. legacy Shift-JIS or corrupted binaries) fall back to `errors="replace"` in Python `decode()`, which may alter invalid byte sequences. Byte-for-byte fidelity is guaranteed exclusively for valid UTF-8 text files.
+3. **Filesystem Architecture Assumptions**:
+   - Kernel file locking (`fcntl.flock` on POSIX, `msvcrt.locking` on Windows) guarantees mutual exclusion on local filesystems (APFS, ext4, NTFS, XFS).
+   - Network filesystems without advisory lock daemons (e.g., legacy NFSv3 without `lockd` or certain FUSE drivers) are outside automated kernel locking guarantees and should not be used for concurrent installation.
+4. **Stress Testing of Microsecond Race Windows**:
+   - The post-flock parity loop mitigates detached inode locks, but microsecond-level racing during external forced inode replacement remains a routine maintenance backlog item.
