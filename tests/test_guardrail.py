@@ -20,7 +20,9 @@ class TestSecurityGuardrails(unittest.TestCase):
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True
+            text=True,
+            encoding="utf-8",
+            errors="replace"
         )
         payload = json.dumps({"tool_input": {"command": command}})
         out, err = p.communicate(payload)
@@ -49,10 +51,23 @@ class TestSecurityGuardrails(unittest.TestCase):
         code, err = self.run_guardrail('eval "git push --force"')
         self.assertEqual(code, 2)
 
+        # Compound commands inside eval separated by semicolon or &&
+        code, err = self.run_guardrail('eval "git status ; git push --force"')
+        self.assertEqual(code, 2)
+
+        code, err = self.run_guardrail('eval "echo safe && git reset --hard"')
+        self.assertEqual(code, 2)
+
         code, err = self.run_guardrail("sh -c 'git reset --hard'")
         self.assertEqual(code, 2)
 
+        code, err = self.run_guardrail("sh -c 'git status ; git clean -fd'")
+        self.assertEqual(code, 2)
+
         code, err = self.run_guardrail("bash -c 'git clean -fd'")
+        self.assertEqual(code, 2)
+
+        code, err = self.run_guardrail('python3 -c "import os; os.system(\x27git push --force\x27)"')
         self.assertEqual(code, 2)
 
     def test_blocks_command_substitution(self):

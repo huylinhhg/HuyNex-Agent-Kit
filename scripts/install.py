@@ -12,7 +12,11 @@ Production-grade installer for AI Coding Agents:
 Capabilities:
 - Idempotent Skills & 9 Modular Rules deployment.
 - Non-destructive managed block injection with atomic writes.
-- Bulletproof uninstaller: NEVER deletes pre-existing user files, only strips tags.
+- Bulletproof uninstaller:
+  * NEVER deletes pre-existing user files; strips managed blocks or RESTORES FROM BACKUP.
+  * Protects user-modified files from deletion with automatic preservation archive.
+  * Preserves original file permissions and whitespace.
+  * Automatic migration for legacy v0.3.1 array manifests.
 - PreToolUse security hook registration and clean unregistration.
 - Manifest-based backup, restore, verification (--doctor with proper exit codes).
 """
@@ -57,9 +61,18 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def atomic_write(target_path: Path, content: bytes, mode: int = 0o644):
-    """Ghi file an toàn nguyên tử (atomic write) chống corrupt dữ liệu khi bị ngắt."""
+def atomic_write(target_path: Path, content: bytes, mode: int = None):
+    """Ghi file an toàn nguyên tử (atomic write) bảo toàn file permissions ban đầu."""
     target_path.parent.mkdir(parents=True, exist_ok=True)
+    if mode is None:
+        if target_path.is_file():
+            try:
+                mode = target_path.stat().st_mode & 0o777
+            except Exception:
+                mode = 0o644
+        else:
+            mode = 0o755 if "guardrail" in target_path.name or target_path.suffix in (".sh", ".py") else 0o644
+
     fd, tmp = tempfile.mkstemp(prefix=".huynex-tmp-", dir=target_path.parent)
     try:
         with os.fdopen(fd, "wb") as f:
@@ -114,6 +127,7 @@ def get_detected_clients(home: Path) -> dict[str, dict]:
         "installed": cursor_dir.is_dir(),
         "rules_dir": cursor_dir / "rules",
         "root_file": cursor_dir / "AGENTS.md",
+        "use_mdc": True,
     }
 
     # 5. Central Shared Hub (Fallback & cross-agent hub)
@@ -133,10 +147,7 @@ def generate_modular_rules_block(home: Path) -> str:
     template_path = RULES_SRC / "CLAUDE.template.md"
     if template_path.is_file():
         text = template_path.read_text(encoding="utf-8")
-        if "<!-- HUY_LOCAL_BRAIN_START -->" in text and "<!-- HUY_LOCAL_BRAIN_END -->" in text:
-            match = re.search(r"<!-- HUY_LOCAL_BRAIN_START -->\s*(.*?)\s*<!-- HUY_LOCAL_BRAIN_END -->", text, re.S)
-            body = match.group(1) if match else text
-        elif BEGIN_TAG in text and END_TAG in text:
+        if BEGIN_TAG in text and END_TAG in text:
             match = re.search(re.escape(BEGIN_TAG) + r"\s*(.*?)\s*" + re.escape(END_TAG), text, re.S)
             body = match.group(1) if match else text
         else:
@@ -175,20 +186,30 @@ def inject_rules_block_safely(target_file: Path, managed_block: str) -> tuple[st
 
 
 def strip_rules_block_safely(target_file: Path) -> tuple[str, bool]:
-    """Loại bỏ khối quản trị của HuyNex khỏi file, giữ lại 100% nội dung riêng của người dùng."""
+    """Loại bỏ khối quản trị của HuyNex khỏi file, bảo toàn tuyệt đối khoảng trắng và nội dung riêng của người dùng."""
     if not target_file.is_file():
         return "", False
 
     existing_text = target_file.read_text(encoding="utf-8", errors="ignore")
     if BEGIN_TAG in existing_text and END_TAG in existing_text:
-        cleaned = re.sub(
-            re.escape(BEGIN_TAG) + r".*?" + re.escape(END_TAG) + r"\n?",
-            "",
-            existing_text,
-            flags=re.S,
-        ).strip()
+        # Bóc tách chính xác khối thẻ và khoảng cách gắn với nó, KHÔNG gọi .strip() trên toàn bộ file
+        pattern = r"(?:\r?\n)?" + re.escape(BEGIN_TAG) + r".*?" + re.escape(END_TAG) + r"(?:\r?\n)?"
+        cleaned = re.sub(pattern, "\n", existing_text, flags=re.S)
         return cleaned, True
     return existing_text, False
+
+
+def format_for_cursor_mdc(rule_name: str, md_content: str) -> str:
+    """Đóng gói rule module thành định dạng chuẩn .mdc của Cursor với YAML frontmatter."""
+    clean_title = rule_name.replace(".md", "").replace("-", " ").title()
+    frontmatter = (
+        f"---\n"
+        f"description: HuyNex Governance Rule - {clean_title}\n"
+        f"globs: *\n"
+        f"alwaysApply: true\n"
+        f"---\n\n"
+    )
+    return frontmatter + md_content
 
 
 def configure_claude_guardrail(settings_file: Path, hook_script: Path, dry_run: bool = False) -> bool:
@@ -210,7 +231,6 @@ def configure_claude_guardrail(settings_file: Path, hook_script: Path, dry_run: 
     pre_hooks = data["hooks"].get("PreToolUse", [])
     hook_cmd = f"python3 \"{hook_script}\"" if sys.platform != "win32" else f"python \"{hook_script}\""
 
-    # Kiểm tra xem hook đã được đăng ký chưa
     already_registered = False
     for item in pre_hooks:
         if item.get("matcher") == "Bash":
@@ -272,12 +292,31 @@ def unconfigure_claude_guardrail(settings_file: Path) -> bool:
 
 
 def load_manifest(manifest_file: Path) -> dict:
+    """Đọc manifest với cơ chế Migration tự động cho cấu trúc JSON array của v0.3.1."""
     if manifest_file.is_file():
         try:
-            return json.loads(manifest_file.read_text(encoding="utf-8"))
+            raw = json.loads(manifest_file.read_text(encoding="utf-8"))
+            if isinstance(raw, list):
+                # Tự động di chuyển từ v0.3.1 legacy format (array) sang v0.3.3 dict format
+                entries = {}
+                for item in raw:
+                    path_str = item.get("path")
+                    if path_str:
+                        entries[path_str] = {
+                            "type": item.get("type", "UNKNOWN"),
+                            "managed_mode": "injected_block" if item.get("type") == "ROOT_INSTRUCTION" else "managed_file",
+                            "existed_prior": False,
+                            "sha256_installed": item.get("sha256", ""),
+                            "updated_at": item.get("installed_at", ""),
+                        }
+                return {"version": "0.3.3", "entries": entries}
+            elif isinstance(raw, dict):
+                if "entries" not in raw:
+                    raw["entries"] = {}
+                return raw
         except Exception:
             pass
-    return {"version": "0.3.2", "entries": {}}
+    return {"version": "0.3.3", "entries": {}}
 
 
 def save_manifest(manifest_file: Path, manifest_data: dict):
@@ -323,16 +362,28 @@ def cmd_install(is_all: bool, dry_run: bool):
     # 2. Cài đặt 9 Modular Rules (rules/modules)
     if RULES_MODULES_SRC.is_dir():
         for rule_file in sorted(RULES_MODULES_SRC.glob("*.md")):
-            rule_bytes = rule_file.read_bytes()
+            raw_rule_text = rule_file.read_text(encoding="utf-8")
+            raw_rule_bytes = raw_rule_text.encode("utf-8")
+
             for c_name in ["Claude Code", "Codex", "Cursor", "Shared Hub"]:
                 c_info = clients[c_name]
                 if not c_info["installed"] or "rules_dir" not in c_info:
                     continue
-                dst = c_info["rules_dir"] / rule_file.name
+
+                # Nếu là Cursor: dùng định dạng .mdc và thêm frontmatter
+                if c_info.get("use_mdc"):
+                    target_name = rule_file.stem + ".mdc"
+                    dst = c_info["rules_dir"] / target_name
+                    mdc_text = format_for_cursor_mdc(rule_file.name, raw_rule_text)
+                    rule_bytes = mdc_text.encode("utf-8")
+                else:
+                    dst = c_info["rules_dir"] / rule_file.name
+                    rule_bytes = raw_rule_bytes
+
                 existed = dst.is_file()
                 dst_bytes = dst.read_bytes() if existed else None
                 if dst_bytes != rule_bytes:
-                    plan.append(("RULE_MODULE", f"{c_name} module: {rule_file.name}", dst, rule_bytes, dst_bytes, existed))
+                    plan.append(("RULE_MODULE", f"{c_name} module: {dst.name}", dst, rule_bytes, dst_bytes, existed))
 
     # 3. Tiêm khối quản trị vào các file chỉ dẫn gốc (CLAUDE.md, AGENTS.md, GEMINI.md)
     rules_block = generate_modular_rules_block(home)
@@ -376,20 +427,22 @@ def cmd_install(is_all: bool, dry_run: bool):
 
     for act, desc, dst, new_b, old_b, existed in plan:
         bk_file_str = None
+        sha_before = None
         if old_b is not None:
             backup_dir.mkdir(parents=True, exist_ok=True)
             bk_name = f"{len(backup_records):03d}_{dst.name}.bak"
             bk_file = backup_dir / bk_name
             bk_file.write_bytes(old_b)
             bk_file_str = str(bk_file)
+            sha_before = hashlib.sha256(old_b).hexdigest()
             backup_records.append({
                 "path": str(dst),
                 "backup_file": bk_file_str,
-                "sha256_before": hashlib.sha256(old_b).hexdigest()
+                "sha256_before": sha_before
             })
 
-        mode = 0o755 if "guardrail" in dst.name else 0o644
-        atomic_write(dst, new_b, mode)
+        mode = 0o755 if "guardrail" in dst.name else None
+        atomic_write(dst, new_b, mode=mode)
 
         # Ghi nhận trạng thái sở hữu tệp (P0 Data Safety)
         active_entries[str(dst)] = {
@@ -397,8 +450,9 @@ def cmd_install(is_all: bool, dry_run: bool):
             "managed_mode": "injected_block" if act == "ROOT_INSTRUCTION" and existed else "managed_file",
             "existed_prior": existed,
             "backup_file": bk_file_str or active_entries.get(str(dst), {}).get("backup_file"),
+            "sha256_before": sha_before or active_entries.get(str(dst), {}).get("sha256_before"),
+            "sha256_installed": hashlib.sha256(new_b).hexdigest(),
             "updated_at": datetime.now(timezone.utc).isoformat(),
-            "sha256": hashlib.sha256(new_b).hexdigest()
         }
         print(f"  ✓ Đã ghi: {dst}")
 
@@ -460,13 +514,11 @@ def cmd_doctor() -> bool:
 
     # 2. Kiểm tra Root Instructions
     print("\n[2] Kiểm tra File Chỉ dẫn Gốc (CLAUDE.md, AGENTS.md, GEMINI.md):")
-    checked_roots = 0
     for c_name, c_info in clients.items():
         if not c_info["installed"]:
             continue
         rf = c_info.get("root_file")
         if rf and rf.is_file():
-            checked_roots += 1
             text = rf.read_text(encoding="utf-8", errors="ignore")
             has_tag = BEGIN_TAG in text and END_TAG in text
             if has_tag:
@@ -488,7 +540,6 @@ def cmd_doctor() -> bool:
 
         if hook_file.is_file():
             print(f"  ✓ Hook script: {hook_file} (Quyền thực thi: {oct(hook_file.stat().st_mode)[-3:]})")
-            # Chạy thử hook bằng mock input
             try:
                 res = subprocess.run(
                     [sys.executable, str(hook_file)],
@@ -535,11 +586,14 @@ def cmd_doctor() -> bool:
 
 def cmd_uninstall():
     """Gỡ bỏ an toàn các file và cấu hình do HuyNex Agent Kit quản lý.
-    P0 DATA SAFETY: TUYỆT ĐỐI KHÔNG XÓA FILE CÁ NHÂN GỐC CỦA NGƯỜI DÙNG!"""
+    P0 DATA SAFETY:
+    1. Tuyệt đối KHÔNG xóa file chỉ dẫn gốc (CLAUDE.md, etc.) mà chỉ bóc tách tag.
+    2. Nếu file skill/rule từng tồn tại trước đó: PHỤC HỒI NGUYÊN TRẠNG TỪ BẢN SAO LƯU (.bak).
+    3. Nếu file do kit tạo mới bị người dùng sửa: BẢO TỒN VÀO THƯ MỤC ARCHIVE, không xóa mất mát."""
     home = Path.home()
     manifest_file = home / ".huynex/installed_manifest.json"
     print("=" * 65)
-    print("HUYNEX AGENT KIT — SAFE UNINSTALLER")
+    print("HUYNEX AGENT KIT — SAFE UNINSTALLER & RESTORER")
     print("=" * 65)
 
     if not manifest_file.is_file():
@@ -550,6 +604,8 @@ def cmd_uninstall():
 
     entries = manifest_data.get("entries", {})
     cleaned_count = 0
+    restored_count = 0
+    preserved_count = 0
     unlinked_count = 0
 
     # 1. Gỡ bỏ các tệp được ghi nhận trong manifest
@@ -561,15 +617,13 @@ def cmd_uninstall():
         managed_mode = meta.get("managed_mode", "managed_file")
         existed_prior = meta.get("existed_prior", False)
         item_type = meta.get("type", "")
+        backup_file = meta.get("backup_file")
 
-        # P0 DATA SAFETY RULE:
-        # Nếu là ROOT_INSTRUCTION hoặc file đã tồn tại trước đó:
-        # CHỈ ĐƯỢC PHÉP gỡ bỏ block <!-- HUYNEX_AGENT_KIT_START -->, KHÔNG ĐƯỢC UNLINK!
-        if item_type == "ROOT_INSTRUCTION" or managed_mode == "injected_block" or existed_prior:
+        # TRƯỜNG HỢP 1: ROOT_INSTRUCTION hoặc file tiêm block quản trị
+        if item_type == "ROOT_INSTRUCTION" or managed_mode == "injected_block":
             cleaned_text, was_stripped = strip_rules_block_safely(p)
             if was_stripped:
-                # Nếu file trống hoàn toàn sau khi strip và trước đây không tồn tại:
-                if not cleaned_text and not existed_prior:
+                if not cleaned_text.strip() and not existed_prior:
                     p.unlink(missing_ok=True)
                     unlinked_count += 1
                     print(f"  ✓ Đã xóa file rỗng do HuyNex tạo mới: {p}")
@@ -577,15 +631,38 @@ def cmd_uninstall():
                     atomic_write(p, cleaned_text.encode("utf-8"))
                     cleaned_count += 1
                     print(f"  ✓ Đã gỡ khối quản trị, BẢO TOÀN nội dung riêng của người dùng: {p}")
+
+        # TRƯỜNG HỢP 2: Tệp skill/rule ĐÃ TỒN TẠI TỪ TRƯỚC khi cài đặt HuyNex
+        elif existed_prior and managed_mode == "managed_file":
+            if backup_file and Path(backup_file).is_file():
+                bk_bytes = Path(backup_file).read_bytes()
+                atomic_write(p, bk_bytes)
+                restored_count += 1
+                print(f"  ✓ PHỤC HỒI NGUYÊN TRẠNG tệp gốc của người dùng từ bản sao lưu: {p}")
+            else:
+                print(f"  ⚠️ Cảnh báo: Tệp gốc của người dùng ({p}) được giữ nguyên (không tìm thấy bản backup).")
+
+        # TRƯỜNG HỢP 3: Tệp do HuyNex tạo mới hoàn toàn
         else:
-            # File do HuyNex hoàn toàn tạo mới (skills, standalone rules, hook script)
-            # Kiểm tra xem có bị người dùng sửa thêm nội dung ngoài không
-            try:
-                p.unlink(missing_ok=True)
-                unlinked_count += 1
-                print(f"  ✓ Đã xóa file do HuyNex cài: {p}")
-            except OSError as e:
-                print(f"  ❌ Lỗi khi xóa {p}: {e}")
+            installed_sha = meta.get("sha256_installed")
+            current_sha = sha256_file(p)
+
+            # Kiểm tra xem người dùng có sửa đổi nội dung tệp sau khi cài đặt không
+            if installed_sha and current_sha and current_sha != installed_sha:
+                # Bảo vệ file người dùng đã chỉnh sửa
+                user_archive_dir = home / ".huynex/preserved_user_modified"
+                user_archive_dir.mkdir(parents=True, exist_ok=True)
+                archive_file = user_archive_dir / f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{p.name}"
+                shutil.copy2(p, archive_file)
+                preserved_count += 1
+                print(f"  🛡️ Tệp {p} đã được người dùng chỉnh sửa sau khi cài: Bảo tồn tại {archive_file} và giữ nguyên.")
+            else:
+                try:
+                    p.unlink(missing_ok=True)
+                    unlinked_count += 1
+                    print(f"  ✓ Đã xóa file do HuyNex cài: {p}")
+                except OSError as e:
+                    print(f"  ❌ Lỗi khi xóa {p}: {e}")
 
     # 2. Quét dọn fallback đối với các file root nếu manifest bị thiếu
     clients = get_detected_clients(home)
@@ -605,9 +682,15 @@ def cmd_uninstall():
         if unregistered:
             print(f"  ✓ Đã gỡ bỏ đăng ký PreToolUse hook khỏi: {claude_settings}")
 
-    # 4. Xóa manifest
+    # 4. Xóa manifest sau khi đã hoàn tất gỡ cài đặt an toàn
     manifest_file.unlink(missing_ok=True)
-    print(f"\n🎉 GỠ CÀI ĐẶT AN TOÀN HOÀN TẤT: {unlinked_count} files đã xóa, {cleaned_count} files được giữ nguyên và gỡ tag.")
+    print("\n" + "=" * 65)
+    print(f"🎉 GỠ CÀI ĐẶT HOÀN TẤT VÀ BẢO TOÀN DỮ LIỆU:")
+    print(f"  • {unlinked_count} tệp HuyNex sạch sẽ đã xóa")
+    print(f"  • {cleaned_count} tệp root được gỡ tag quản trị, giữ nguyên nội dung cá nhân")
+    print(f"  • {restored_count} tệp gốc có sẵn của người dùng được PHỤC HỒI 100% từ backup")
+    print(f"  • {preserved_count} tệp người dùng tự sửa sau khi cài được BẢO TỒN an toàn")
+    print("=" * 65)
 
 
 def main():

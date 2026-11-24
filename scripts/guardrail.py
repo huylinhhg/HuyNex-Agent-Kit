@@ -115,23 +115,40 @@ def evaluate_single_command(cmd_segment: str, workspace_root: Path, depth: int =
     bin_name = Path(raw_bin).name.lower()
 
     # =========================================================================
-    # 0. ĐỆ QUY GIẢI MÃ SUBSHELL / EVAL (eval, sh -c, bash -c, zsh -c)
+    # 0. ĐỆ QUY GIẢI MÃ SUBSHELL / EVAL (eval, sh -c, bash -c, zsh -c, python -c)
     # =========================================================================
     if bin_name == "eval" and len(tokens) > 1:
         inner_cmd = " ".join(tokens[1:])
-        blocked, reason = evaluate_single_command(inner_cmd, workspace_root, depth + 1)
-        if blocked:
-            return True, f"Bên trong eval: {reason}"
+        for sub_sub in extract_command_substitutions(inner_cmd):
+            blocked, reason = evaluate_single_command(sub_sub, workspace_root, depth + 1)
+            if blocked:
+                return True, f"Bên trong eval substitution: {reason}"
+        sub_commands = split_compound_commands(inner_cmd)
+        for sub in sub_commands:
+            blocked, reason = evaluate_single_command(sub, workspace_root, depth + 1)
+            if blocked:
+                return True, f"Bên trong eval: {reason}"
 
     elif bin_name in ("sh", "bash", "zsh") and "-c" in tokens:
         idx = tokens.index("-c")
         if idx + 1 < len(tokens):
             inner_cmd = tokens[idx + 1]
+            for sub_sub in extract_command_substitutions(inner_cmd):
+                blocked, reason = evaluate_single_command(sub_sub, workspace_root, depth + 1)
+                if blocked:
+                    return True, f"Bên trong {bin_name} substitution: {reason}"
             sub_commands = split_compound_commands(inner_cmd)
             for sub in sub_commands:
                 blocked, reason = evaluate_single_command(sub, workspace_root, depth + 1)
                 if blocked:
                     return True, f"Bên trong {bin_name} -c: {reason}"
+
+    elif bin_name in ("python", "python3") and "-c" in tokens:
+        idx = tokens.index("-c")
+        if idx + 1 < len(tokens):
+            code_snippet = tokens[idx + 1]
+            if re.search(r"git\s+push\s+.*(?:--force|-f\b|\+)", code_snippet) or "reset --hard" in code_snippet:
+                return True, "Bên trong python -c: Chặn đứng lệnh Git hủy diệt."
 
     # =========================================================================
     # 1. KIỂM DUYỆT CÁC LỆNH GIT HỦY DIỆT

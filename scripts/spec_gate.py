@@ -187,22 +187,50 @@ def main():
         else:
             log("  ℹ️ Không phát hiện bộ test tự động nào trong thư mục.")
 
-    # Phán quyết Fail-Closed & Phân biệt rõ ràng PASS vs NOT_VERIFIED vs BLOCKED
-    if results["blocking_reasons"]:
+    # Phán quyết Fail-Closed & Phân biệt rành mạch giữa THẤT BẠI (BLOCKED) vs THIẾU BẰNG CHỨNG (NOT_VERIFIED)
+    failures = []
+    missing_evidence = []
+
+    # 1. Thu thập các lỗi thực tế (Explicit Failures)
+    if results["checklist"]["pending"]:
+        failures.append(f"{len(results['checklist']['pending'])} pending checklist items")
+    if results["deliverables"]["missing"]:
+        failures.append(f"{len(results['deliverables']['missing'])} missing deliverables on disk")
+    if results["test_run"]["executed"] and not results["test_run"]["passed"]:
+        failures.append(f"Test suite '{results['test_run']['command']}' failed")
+    if args.require_clean_git:
+        if git_err:
+            failures.append(f"Git status failed to verify: {git_err}")
+        elif dirty_files:
+            failures.append(f"Git working tree is dirty ({len(dirty_files)} uncommitted files)")
+
+    # 2. Thu thập các bằng chứng bị thiếu (Missing Evidence)
+    if not results["spec_found"]:
+        missing_evidence.append(f"Spec file '{args.spec}' not found")
+    elif results["checklist"]["total"] == 0:
+        missing_evidence.append(f"Spec file '{args.spec}' contains 0 checklist items")
+
+    if not args.skip_tests and not results["test_run"]["executed"]:
+        missing_evidence.append("No automated test suite detected")
+
+    results["failures"] = failures
+    results["missing_evidence"] = missing_evidence
+    results["blocking_reasons"] = failures + missing_evidence
+
+    # MA TRẬN QUYẾT ĐỊNH CHUẨN KỸ THUẬT:
+    # 1. Có lỗi thực tế (test tạch, checklist dở dang) -> BẮT BUỘC BLOCKED (exit 1), cờ --allow-unverified KHÔNG ĐƯỢC PHÉP che giấu lỗi!
+    if failures:
+        results["status"] = "BLOCKED"
+        exit_code = 1
+    # 2. Không có lỗi nhưng thiếu bằng chứng xác thực
+    elif missing_evidence:
         if args.allow_unverified:
             results["status"] = "NOT_VERIFIED"
             exit_code = 0
         else:
             results["status"] = "BLOCKED"
             exit_code = 1
-    elif not results["spec_found"] and not results["test_run"]["executed"]:
-        results["status"] = "NOT_VERIFIED"
-        if args.allow_unverified:
-            exit_code = 0
-        else:
-            results["blocking_reasons"].append("Zero evidence found (no spec checklist, no automated tests)")
-            results["status"] = "BLOCKED"
-            exit_code = 1
+    # 3. Mọi bằng chứng đều đạt chuẩn
     else:
         results["status"] = "PASS"
         exit_code = 0

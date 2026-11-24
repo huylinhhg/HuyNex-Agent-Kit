@@ -14,6 +14,39 @@ SPINNER_CHARS = set("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 
 # Cap stream buffer at 20MB to avoid OOM on runaway infinite processes
 MAX_STREAM_BYTES = 20 * 1024 * 1024
+CHUNK_SIZE = 64 * 1024  # 64 KB read chunks
+
+
+def read_bounded_stream(stream, max_bytes: int = MAX_STREAM_BYTES) -> tuple[str, bool]:
+    """
+    Reads stream in 64KB chunks up to max_bytes without loading unbounded data into RAM.
+    Guarantees bounded memory consumption regardless of stream size.
+    """
+    chunks = []
+    total_bytes = 0
+    truncated = False
+
+    while True:
+        chunk = stream.read(min(CHUNK_SIZE, max_bytes - total_bytes + 1))
+        if not chunk:
+            break
+        chunk_len = len(chunk.encode("utf-8", errors="ignore") if isinstance(chunk, str) else chunk)
+        if total_bytes + chunk_len > max_bytes:
+            remaining = max(0, max_bytes - total_bytes)
+            chunk = chunk[:remaining]
+            chunks.append(chunk)
+            truncated = True
+            break
+        chunks.append(chunk)
+        total_bytes += chunk_len
+        if total_bytes >= max_bytes:
+            truncated = True
+            break
+
+    text = "".join(chunks)
+    if truncated:
+        text += "\n\n[HUYNEX DISTILL WARNING: Stream ceiling of 20MB reached. Truncated safely to prevent memory exhaustion]\n"
+    return text, truncated
 
 
 def enforce_buffer_cap(text: str, max_bytes: int = MAX_STREAM_BYTES) -> str:

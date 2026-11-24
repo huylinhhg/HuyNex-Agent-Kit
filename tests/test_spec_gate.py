@@ -17,7 +17,7 @@ class TestSpecGate(unittest.TestCase):
 
     def run_spec_gate(self, spec_path: str, flags: list[str] = None) -> tuple[int, str]:
         cmd = [sys.executable, str(SPEC_GATE_SCRIPT), spec_path] + (flags or [])
-        res = subprocess.run(cmd, capture_output=True, text=True)
+        res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
         return res.returncode, res.stdout + res.stderr
 
     def test_fails_closed_when_spec_missing(self):
@@ -60,18 +60,29 @@ class TestSpecGate(unittest.TestCase):
         finally:
             Path(f_path).unlink(missing_ok=True)
 
-    def test_allow_unverified_returns_not_verified_status(self):
+    def test_allow_unverified_cannot_bypass_explicit_failure(self):
+        """P1 Test: Incomplete checklist is an explicit failure that CANNOT be bypassed by --allow-unverified."""
         with tempfile.NamedTemporaryFile("w+", suffix=".md", delete=False) as f:
-            f.write("# Incomplete\n- [ ] Item not done\n")
+            f.write("# Incomplete Task\n- [ ] Unfinished deliverable\n")
             f_path = f.name
         try:
             cmd = [sys.executable, str(SPEC_GATE_SCRIPT), f_path, "--skip-tests", "--allow-unverified", "--json"]
-            res = subprocess.run(cmd, capture_output=True, text=True)
-            self.assertEqual(res.returncode, 0)
+            res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+            # Must remain BLOCKED with exit code 1!
+            self.assertEqual(res.returncode, 1)
             data = json.loads(res.stdout)
-            self.assertEqual(data["status"], "NOT_VERIFIED")
+            self.assertEqual(data["status"], "BLOCKED")
+            self.assertIn("1 pending checklist items", data["failures"])
         finally:
             Path(f_path).unlink(missing_ok=True)
+
+    def test_allow_unverified_permits_missing_evidence_as_not_verified(self):
+        """P1 Test: Missing spec file is missing evidence and yields NOT_VERIFIED with exit code 0 when permitted."""
+        cmd = [sys.executable, str(SPEC_GATE_SCRIPT), "/tmp/definitely_missing_spec.md", "--skip-tests", "--allow-unverified", "--json"]
+        res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        self.assertEqual(res.returncode, 0)
+        data = json.loads(res.stdout)
+        self.assertEqual(data["status"], "NOT_VERIFIED")
 
     def test_json_flag_outputs_pure_valid_json(self):
         with tempfile.NamedTemporaryFile("w+", suffix=".md", delete=False) as f:
@@ -79,7 +90,7 @@ class TestSpecGate(unittest.TestCase):
             f_path = f.name
         try:
             cmd = [sys.executable, str(SPEC_GATE_SCRIPT), f_path, "--skip-tests", "--json"]
-            res = subprocess.run(cmd, capture_output=True, text=True)
+            res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
             data = json.loads(res.stdout)
             self.assertEqual(data["status"], "PASS")
             self.assertEqual(data["checklist"]["total"], 1)

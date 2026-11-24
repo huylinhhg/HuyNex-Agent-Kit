@@ -22,7 +22,7 @@ SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.dirname(SCRIPT_DIR))
 sys.path.insert(0, SCRIPT_DIR)
 
-from distill.distiller import distill_stream
+from distill.distiller import distill_stream, read_bounded_stream
 from distill.conservation import ConservationGate
 
 
@@ -102,27 +102,36 @@ def main():
     gate = ConservationGate()
 
     if cmd:
-        # Run subprocess
+        # Run subprocess with bounded memory streaming (max 20MB)
         try:
             hint = " ".join(cmd)
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                check=False
+                encoding="utf-8",
+                errors="replace"
             )
-            raw_output = proc.stdout or ""
-            exit_code = proc.returncode
+            raw_output, truncated = read_bounded_stream(proc.stdout)
+            if truncated:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=2)
+                except Exception:
+                    proc.kill()
+            else:
+                proc.wait()
+            exit_code = proc.returncode or 0
         except Exception as e:
             sys.stderr.write(f"huynex-distill execution error: {e}\n")
             sys.exit(1)
     else:
-        # Stdin pipe mode
+        # Stdin pipe mode with bounded memory streaming (max 20MB)
         if sys.stdin.isatty():
             parser.print_help()
             sys.exit(0)
-        raw_output = sys.stdin.read()
+        raw_output, truncated = read_bounded_stream(sys.stdin)
         hint = distiller_type
         exit_code = 0
 

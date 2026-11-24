@@ -16,6 +16,7 @@ from distill.distiller import (
     distill_generic,
     distill_stream,
     enforce_buffer_cap,
+    read_bounded_stream,
 )
 from distill.conservation import ConservationGate
 
@@ -92,6 +93,14 @@ class TestBufferCap(unittest.TestCase):
         self.assertIn("Stream capped", capped)
         self.assertLessEqual(len(capped), 1200)
 
+    def test_read_bounded_stream_chunking(self):
+        import io
+        fake_huge = io.StringIO("B" * (5 * 1024 * 1024))
+        text, truncated = read_bounded_stream(fake_huge, max_bytes=1000)
+        self.assertTrue(truncated)
+        self.assertIn("Stream ceiling of 20MB reached", text)
+        self.assertLessEqual(len(text), 1500)
+
 
 class TestConservationGate(unittest.TestCase):
     def test_gate_detects_token_savings(self):
@@ -118,6 +127,16 @@ class TestConservationGate(unittest.TestCase):
         self.assertFalse(passed)
         self.assertEqual(len(missing), 1)
         self.assertIn("Data corrupt", missing[0])
+
+    def test_gate_catches_short_error_mutation(self):
+        """P1 Test: Verifies that short errors like 'Error: X' vs 'Error: Y' are properly caught."""
+        gate = ConservationGate(fallback_on_loss=False)
+        raw = "Error: X\n"
+        distilled = "Error: Y\n"
+        passed, missing = gate.verify_error_conservation(raw, distilled)
+        self.assertFalse(passed)
+        self.assertEqual(len(missing), 1)
+        self.assertIn("Error: X", missing[0])
 
     def test_gate_falls_back_to_raw_on_loss(self):
         gate = ConservationGate(fallback_on_loss=True)

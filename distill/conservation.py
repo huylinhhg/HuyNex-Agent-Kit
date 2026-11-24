@@ -67,7 +67,7 @@ class ConservationGate:
             core_msg = sig_norm.split(":", 1)[-1].strip() if ":" in sig_norm else sig_norm
 
             # Kiểm tra xem sig hoặc core_msg có nằm trong distilled đã chuẩn hóa khoảng trắng không
-            if sig_norm not in distilled_norm and (len(core_msg) > 6 and core_msg not in distilled_norm):
+            if sig_norm not in distilled_norm and core_msg not in distilled_norm:
                 missing_sigs.append(sig)
 
         if missing_sigs:
