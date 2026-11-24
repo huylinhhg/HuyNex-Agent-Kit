@@ -89,8 +89,8 @@ class TestConcurrencySubprocess(unittest.TestCase):
         self.assertEqual(manifest.get("status"), "INSTALLED")
 
     def test_concurrent_subprocess_uninstall_locked(self):
-        """Two independent processes running uninstall concurrently:
-        exactly one acquires the lock."""
+        """When an active lifecycle lock is held, concurrent uninstall fails safely with code 1,
+        and succeeds with code 0 once the lock is released."""
         # First install cleanly
         install_res = subprocess.run(
             [sys.executable, str(INSTALL_PY), "--all"],
@@ -101,15 +101,53 @@ class TestConcurrencySubprocess(unittest.TestCase):
         )
         self.assertEqual(install_res.returncode, 0)
 
-        cmd = [sys.executable, str(INSTALL_PY), "--uninstall"]
-        p1 = subprocess.Popen(cmd, env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        p2 = subprocess.Popen(cmd, env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        # Hold the lock deterministically in child process
+        child_code = f"""
+import sys, time, pathlib
+sys.path.insert(0, r"{REPO_ROOT}")
+from scripts.install import LifecycleLock
+home = pathlib.Path(r"{self.home}")
+with LifecycleLock(home):
+    sys.stdout.write("READY\\n")
+    sys.stdout.flush()
+    sys.stdin.readline()
+"""
+        proc = subprocess.Popen(
+            [sys.executable, "-c", child_code],
+            env=self.env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        ready_line = proc.stdout.readline().strip()
+        self.assertEqual(ready_line, "READY")
 
-        out1, err1 = p1.communicate(timeout=30)
-        out2, err2 = p2.communicate(timeout=30)
+        # Now run uninstall in independent subprocess: MUST fail with code 1 and report concurrent lock
+        res = subprocess.run(
+            [sys.executable, str(INSTALL_PY), "--uninstall"],
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertEqual(res.returncode, 1, f"Concurrent uninstall must fail with code 1: {res.stdout}\n{res.stderr}")
+        self.assertIn("CONCURRENT LIFECYCLE", res.stdout + res.stderr)
 
-        codes = sorted([p1.returncode, p2.returncode])
-        self.assertEqual(codes, [0, 1], f"Expected [0, 1]. Got {codes}. out1: {out1}, out2: {out2}")
+        # Release lock
+        proc.stdin.write("GO\n")
+        proc.stdin.flush()
+        proc.wait(timeout=5)
+
+        # After release, uninstall must now succeed cleanly with code 0
+        res2 = subprocess.run(
+            [sys.executable, str(INSTALL_PY), "--uninstall"],
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        self.assertEqual(res2.returncode, 0, f"Sequential uninstall after release must succeed: {res2.stdout}\n{res2.stderr}")
 
     def test_subprocess_sigkill_lock_immediately_reclaimed_by_os(self):
         """When a child process holding LifecycleLock is terminated via SIGKILL,
@@ -296,6 +334,9 @@ sys.stdout.flush()
         When inode A is replaced by inode B while a process has opened a descriptor,
         post-flock verification detects the detached inode, retries on inode B,
         and is blocked by contention because another process holds inode B."""
+        if sys.platform == "win32":
+            self.skipTest("Windows NTFS prevents renaming an open file descriptor (sharing violation)")
+
         lock_file = self.home / ".huynex/.lifecycle.lock"
         lock_file.parent.mkdir(parents=True, exist_ok=True)
         lock_file.write_text("initial_inode_a")
