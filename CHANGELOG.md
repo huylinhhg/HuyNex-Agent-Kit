@@ -3,6 +3,16 @@
 Tất cả các thay đổi đáng chú ý của dự án **HuyNex Agent Kit** sẽ được ghi lại trong tệp này.
 Định dạng dựa trên [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/) và tuân thủ [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-11-24
+
+### 🛡️ Critical P0 Inode Stability, Symlink Isolation & TOCTOU Verification Gate
+- **Permanent Lockfile Inode Stability (P0-01)**: `LifecycleLock` maintains a permanent, stable lockfile/inode across all lifecycle operations. Eliminated `self.lock_path.unlink()` in `__exit__()`, preventing race conditions where unlinked inodes allowed concurrent processes to obtain conflicting exclusive locks on different inodes. On clean exit, payload is reset to `{"status": "released"}` while OS kernel lock is relinquished.
+- **Lockfile & Boundary Symlink Protection (P0-02)**: Implemented strict fail-closed symlink rejection on `.lifecycle.lock` and all ancestor directories (`.huynex` up to user home). On POSIX, `os.open` utilizes `O_NOFOLLOW` and compares `fstat` descriptor inode against `lstat` path inode, completely preventing traversal, file truncation, or corruption of external files.
+- **Controlled TOCTOU Pre-Mutation Synchronization (TEST-01)**: Rewrote `test_pre_mutation_toctou_absent_to_present_surprise` with deterministic pre-mutation synchronization hook (`pre_mutation_hook`). Proves that when user files appear between planning and mutation, the installer detects them, captures immutable backups, marks ownership as `EXISTED_PRIOR_USER`, and guarantees byte-for-byte restoration upon uninstall without using arbitrary sleeps.
+- **Subprocess Kernel Lock Regression Suite (TEST-02)**: Added adversarial multiprocessing tests verifying that lockfile inodes remain identical across sessions, sequential process handoff succeeds cleanly, `proc.kill()` automatically releases locks via OS kernel, and existing released lockfiles are never misidentified as active locks.
+- **Lockfile Symlink Regression Suite (TEST-03)**: Added adversarial regression tests proving that direct symlinks at `.lifecycle.lock` and ancestor symlinks at `.huynex` are immediately rejected with non-zero exit codes, leaving external files byte-for-byte unmodified (0 bytes changed/truncated) and writing zero manifests/backups.
+- **Data Safety Contract Traceability Synchronization**: Synchronized all invariant verification references and traceability table in `docs/DATA_SAFETY_CONTRACT.md` with runnable test suite names. Clarified benchmark character stream reduction vs. estimated tokens and aligned closed-source agent verification tiers with CI filesystem testing.
+
 ## [0.4.0] - 2026-11-24
 
 ### 🛡️ Production Hardening & Verified Stable Release Gate

@@ -8,12 +8,12 @@ This document outlines the reproducible benchmark methodology and measured resul
 
 Measured directly via `python3 bin/huynex-distill --benchmark` on the bundled synthetic fixtures:
 
-| Workload Type | Raw Output Size | Distilled Output Size | Token Reduction (%) | Acceptance Gate | Error / Diagnostic Preservation |
+| Workload Type | Raw Output Size | Distilled Output Size | Character Reduction (Est. Tokens*) | Acceptance Gate | Error / Diagnostic Preservation |
 |---|---|---|---|---|---|
-| **Test Suite Distillation** | 6,373 chars (~1,593 tokens) | 297 chars (~74 tokens) | **95.3%** | `>= 70%` (PASS) | **100%** (Error markers: `3 -> 4`, conserved) |
-| **Git Diff Distillation** | 5,966 chars (~1,491 tokens) | 3,140 chars (~785 tokens) | **47.4%** | `>= 40%` (PASS) | **100%** (Context collapsed, modified hunks preserved) |
+| **Test Suite Distillation** | 6,373 chars (~1,593 est. tokens) | 297 chars (~74 est. tokens) | **95.3%** | `>= 70%` (PASS) | **100%** (Error markers: `3 -> 4`, conserved) |
+| **Git Diff Distillation** | 5,966 chars (~1,491 est. tokens) | 3,140 chars (~785 est. tokens) | **47.4%** | `>= 40%` (PASS) | **100%** (Context collapsed, modified hunks preserved) |
 
-> **Scope Note**: The figures above reflect the deterministic fixtures built into `bin/huynex-distill --benchmark` (verified in CI on Linux and macOS). Real-world savings depend on log verbosity and diff context ratio, and input streams are capped at the bounded buffer limit (`MAX_BUFFER_BYTES`) to prevent OOM.
+> **Measurement & Scope Note**: Benchmark metrics directly measure raw character stream reduction. Estimated token counts use standard character heuristics (~4 characters per token) for intuitive reference; they do not represent exact hardware BPE token counts, which vary across model tokenizers (e.g. OpenAI o200k, Claude tokenizer). The figures above reflect the deterministic fixtures built into `bin/huynex-distill --benchmark` (verified in CI on Linux and macOS). Input streams are capped at the bounded buffer limit (`MAX_BUFFER_BYTES`) to prevent memory exhaustion.
 
 ---
 

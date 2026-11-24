@@ -274,7 +274,9 @@ class TestFaultInjectionAndDataSafety(unittest.TestCase):
                 cmd_install(is_all=True, dry_run=False)
 
         lock_file = self.home / ".huynex/.lifecycle.lock"
-        self.assertFalse(lock_file.exists(), "Lifecycle lock must be released on crash")
+        self.assertTrue(lock_file.exists(), "Lifecycle lockfile must remain stable on disk")
+        with LifecycleLock(self.home) as test_lock:
+            self.assertTrue(test_lock._acquired, "Lifecycle lock must be released and re-acquirable after crash")
 
         manifest_file = self.home / ".huynex/installed_manifest.json"
         self.assertTrue(manifest_file.is_file(), "WAL manifest must exist after mid-install crash")
@@ -311,11 +313,13 @@ class TestFaultInjectionAndDataSafety(unittest.TestCase):
         lock_payload = {"pid": dead_pid, "acquired_at": "2026-11-20T00:00:00Z"}
         lock_file.write_text(json.dumps(lock_payload), encoding="utf-8")
 
-        # LifecycleLock must detect stale lock, unlink it, and acquire successfully
+        # LifecycleLock must acquire successfully even if lockfile was left on disk, and keep inode stable
         with LifecycleLock(self.home) as l:
             self.assertTrue(l._acquired)
 
-        self.assertFalse(lock_file.exists())
+        self.assertTrue(lock_file.exists(), "Lockfile must remain stable on disk and not be unlinked")
+        with LifecycleLock(self.home) as l2:
+            self.assertTrue(l2._acquired, "Subsequent process must immediately acquire lock on existing lockfile")
 
     def test_p1_symlink_safety_never_overwrites_user_symlink(self):
         """P1: User symlinks must never be silently overwritten or unlinked during install/uninstall."""

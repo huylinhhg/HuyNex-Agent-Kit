@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/huylinhhg/HuyNex-Agent-Kit/actions/workflows/ci.yml/badge.svg)](https://github.com/huylinhhg/HuyNex-Agent-Kit/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version: 0.4.0](https://img.shields.io/badge/Version-0.4.0-green.svg)](VERSION)
+[![Version: 0.4.1](https://img.shields.io/badge/Version-0.4.1-green.svg)](VERSION)
 [![Platform: macOS | Linux | Windows](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-orange.svg)](#)
 
 [ **English** | [Tiếng Việt](README.vi.md) ]
@@ -69,12 +69,12 @@ Organized as lean, composable rule modules compatible with Claude Code `@import`
 
 Measured using reproducible test suite logs:
 
-| Workload | Raw Chars (Tokens) | Distilled Chars (Tokens) | Token Savings | Diagnostic Retention |
+| Workload | Raw Chars (Est. Tokens) | Distilled Chars (Est. Tokens) | Character Reduction* | Diagnostic Retention |
 |---|---|---|---|---|
 | **Vitest Test Suite (101 tests)** | 6,373 (~1,593) | 297 (~74) | **95.3%** | **100% (All failure markers captured)** |
 | **Git Diff (6 hunks)** | 5,966 (~1,491) | 3,140 (~785) | **47.4%** | **100% (Context collapsed, hunks preserved)** |
 
-*All benchmarks dynamically verified: Test logs achieve $\ge 70\%$ reduction, Git diffs achieve $\ge 40\%$ reduction, with 100% error signatures conserved within the bounded buffer.*
+*All benchmarks dynamically verified: Test logs achieve $\ge 70\%$ reduction, Git diffs achieve $\ge 40\%$ reduction, with 100% error signatures conserved within the bounded buffer. (\*Estimated token counts use standard ~4 chars/token heuristic; true BPE token counts vary by model tokenizer).*
 
 To reproduce locally:
 ```bash
