@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/huylinhhg/HuyNex-Agent-Kit/actions/workflows/ci.yml/badge.svg)](https://github.com/huylinhhg/HuyNex-Agent-Kit/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version: 0.3.1](https://img.shields.io/badge/Version-0.3.1-green.svg)](VERSION)
+[![Version: 0.3.6](https://img.shields.io/badge/Version-0.3.6-green.svg)](VERSION)
 [![Platform: macOS | Linux | Windows](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-orange.svg)](#)
 
 [ **English** | [Tiếng Việt](README.vi.md) ]

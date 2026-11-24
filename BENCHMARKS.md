@@ -1,16 +1,19 @@
 # HuyNex Token Distillation — Benchmark & Verification Report
 
-This document outlines the reproducible benchmark methodology and results for `huynex-distill` (Semantic Token Distillation CLI).
+This document outlines the reproducible benchmark methodology and measured results for `huynex-distill` (Semantic Token Distillation CLI), synchronized directly with `./bin/huynex-distill --benchmark`.
 
 ---
 
-## 📊 Summary Results
+## 📊 Reproducible Benchmark Results
 
-| Workload Type | Raw Output Size | Distilled Output Size | Token Reduction (%) | Error / Stack Trace Preservation |
-|---|---|---|---|---|
-| **Vitest / Jest Test Suite (120 tests)** | ~1,594 tokens (6,376 chars) | ~71 tokens (284 chars) | **95.5%** | **100% (4/4 errors captured)** |
-| **Git Diff Output (5 changed files)** | ~1,491 tokens (5,966 chars) | ~434 tokens (1,736 chars) | **70.9%** | **100% (All modified hunks kept)** |
-| **Large Integration Test Suite (250+ tests)** | ~4,200 tokens (16,800 chars) | ~68 tokens (270 chars) | **98.4%** | **100% (Summary + test counts preserved)** |
+Measured directly via `python3 bin/huynex-distill --benchmark` on the bundled synthetic fixtures:
+
+| Workload Type | Raw Output Size | Distilled Output Size | Token Reduction (%) | Acceptance Gate | Error / Diagnostic Preservation |
+|---|---|---|---|---|---|
+| **Test Suite Distillation** | 6,373 chars (~1,593 tokens) | 297 chars (~74 tokens) | **95.3%** | `>= 70%` (PASS) | **100%** (Error markers: `3 -> 4`, conserved) |
+| **Git Diff Distillation** | 5,966 chars (~1,491 tokens) | 3,140 chars (~785 tokens) | **47.4%** | `>= 40%` (PASS) | **100%** (Context collapsed, modified hunks preserved) |
+
+> **Scope Note**: The figures above reflect the deterministic fixtures built into `bin/huynex-distill --benchmark` (verified in CI on Linux and macOS). Real-world savings depend on log verbosity and diff context ratio, and input streams are capped at the bounded buffer limit (`MAX_BUFFER_BYTES`) to prevent OOM.
 
 ---
 
@@ -19,7 +22,7 @@ This document outlines the reproducible benchmark methodology and results for `h
 Run the automated benchmark locally using the bundled CLI:
 
 ```bash
-# Run benchmark mode
+# Run benchmark mode (exits non-zero if acceptance thresholds or conservation gate fail)
 ./bin/huynex-distill --benchmark
 ```
 
@@ -39,5 +42,5 @@ Compression without verification is dangerous. If a token filter accidentally re
 
 `huynex-distill` enforces the **Conservation Gate**:
 1. Pre-scans raw input for fatal patterns: `FAIL`, `Error:`, `Exception:`, `Traceback`, `AssertionError`, `panic:`.
-2. Verifies that the distilled output retains equal or greater error signal indicators.
-3. If an error is detected in raw input but missing from the distilled output, the system **automatically falls back to raw mode**, guaranteeing zero diagnostic information loss.
+2. Verifies that the distilled output retains every distinct error signature present in the raw input.
+3. If an error signature detected in raw input is missing from the distilled output, the system **automatically falls back to raw mode**, guaranteeing zero diagnostic information loss within the bounded buffer.

@@ -49,6 +49,72 @@ SCRIPTS_DIR = KIT_ROOT / "scripts"
 
 BEGIN_TAG = "<!-- HUYNEX_AGENT_KIT_START -->"
 END_TAG = "<!-- HUYNEX_AGENT_KIT_END -->"
+KIT_VERSION = "0.3.6"
+
+
+class ManifestCorruptError(RuntimeError):
+    """Raised when installed_manifest.json exists but cannot be parsed or has invalid structure."""
+
+
+class LifecycleLockError(RuntimeError):
+    """Raised when another install/uninstall process currently holds the lifecycle lock."""
+
+
+class LifecycleLock:
+    """Cross-platform exclusive file lock using atomic O_CREAT|O_EXCL to prevent concurrent lifecycle races."""
+
+    def __init__(self, home: Path):
+        self.lock_path = home / ".huynex/.lifecycle.lock"
+        self._acquired = False
+
+    def __enter__(self):
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(str(self.lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            raise LifecycleLockError(
+                f"Another HuyNex lifecycle process holds lock {self.lock_path}. "
+                "Wait for it to finish or remove the stale lock file after verifying no install.py is running."
+            )
+        try:
+            payload = json.dumps({
+                "pid": os.getpid(),
+                "acquired_at": datetime.now(timezone.utc).isoformat(),
+            }).encode("utf-8")
+            with os.fdopen(fd, "wb") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            self._acquired = True
+        except Exception:
+            self.lock_path.unlink(missing_ok=True)
+            raise
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._acquired:
+            try:
+                self.lock_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            self._acquired = False
+        return False
+
+
+def verify_backup_integrity(bk_path: Path, expected_sha: str | None) -> tuple[bool, bytes, str]:
+    """Đọc tệp sao lưu và xác minh mật mã SHA-256 trước khi cho phép phục hồi."""
+    try:
+        bk_bytes = bk_path.read_bytes()
+    except OSError as e:
+        return False, b"", f"Cannot read backup file {bk_path}: {e}"
+    actual_sha = hashlib.sha256(bk_bytes).hexdigest()
+    if expected_sha and actual_sha != expected_sha:
+        return (
+            False,
+            b"",
+            f"Backup SHA-256 integrity mismatch (expected {expected_sha[:16]}..., got {actual_sha[:16]}...)",
+        )
+    return True, bk_bytes, ""
 
 
 def sha256_file(path: Path) -> str:
@@ -413,33 +479,43 @@ def unconfigure_claude_guardrail(settings_file: Path) -> bool:
 
 
 def load_manifest(manifest_file: Path) -> dict:
-    """Đọc manifest với cơ chế Migration tự động cho cấu trúc JSON array của v0.3.1."""
-    if manifest_file.is_file():
-        try:
-            raw = json.loads(manifest_file.read_text(encoding="utf-8"))
-            if isinstance(raw, list):
-                # Tự động di chuyển từ v0.3.1 legacy format (array) sang v0.3.5 dict format
-                # P0 DATA SAFETY: v0.3.1 không có thông tin sở hữu, BẮT BUỘC gán UNKNOWN (không suy đoán False)
-                entries = {}
-                for item in raw:
-                    path_str = item.get("path")
-                    if path_str:
-                        entries[path_str] = {
-                            "type": item.get("type", "UNKNOWN"),
-                            "managed_mode": "injected_block" if item.get("type") == "ROOT_INSTRUCTION" else "managed_file",
-                            "existed_prior": "UNKNOWN",
-                            "ownership": "UNKNOWN_LEGACY_V031",
-                            "sha256_installed": item.get("sha256", ""),
-                            "updated_at": item.get("installed_at", ""),
-                        }
-                return {"version": "0.3.5", "entries": entries}
-            elif isinstance(raw, dict):
-                if "entries" not in raw:
-                    raw["entries"] = {}
-                return raw
-        except Exception:
-            pass
-    return {"version": "0.3.5", "entries": {}}
+    """Đọc manifest với cơ chế Fail-Safe tuyệt đối và Migration tự động cho v0.3.1.
+    P0 DATA SAFETY: Nếu tệp manifest tồn tại nhưng hỏng/không parse được/sai cấu trúc,
+    BẮT BUỘC ném ManifestCorruptError để chặn thao tác cài/gỡ, tuyệt đối không trả rỗng."""
+    if not manifest_file.exists():
+        return {"version": KIT_VERSION, "entries": {}}
+
+    try:
+        raw_text = manifest_file.read_text(encoding="utf-8")
+        raw = json.loads(raw_text)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
+        raise ManifestCorruptError(f"Manifest file is unreadable or corrupt JSON ({manifest_file}): {e}")
+
+    if isinstance(raw, list):
+        # Tự động di chuyển từ v0.3.1 legacy format (array) sang dict format hiện hành
+        # P0 DATA SAFETY: v0.3.1 không có thông tin sở hữu, BẮT BUỘC gán UNKNOWN (không suy đoán False)
+        entries = {}
+        for item in raw:
+            if not isinstance(item, dict):
+                raise ManifestCorruptError(f"Legacy manifest array contains non-object entry ({manifest_file})")
+            path_str = item.get("path")
+            if path_str:
+                entries[path_str] = {
+                    "type": item.get("type", "UNKNOWN"),
+                    "managed_mode": "injected_block" if item.get("type") == "ROOT_INSTRUCTION" else "managed_file",
+                    "existed_prior": "UNKNOWN",
+                    "ownership": "UNKNOWN_LEGACY_V031",
+                    "sha256_installed": item.get("sha256", ""),
+                    "updated_at": item.get("installed_at", ""),
+                }
+        return {"version": KIT_VERSION, "entries": entries}
+    elif isinstance(raw, dict):
+        entries = raw.get("entries")
+        if not isinstance(entries, dict):
+            raise ManifestCorruptError(f"Manifest JSON missing valid 'entries' object ({manifest_file})")
+        return raw
+    else:
+        raise ManifestCorruptError(f"Manifest root must be a JSON object or legacy array ({manifest_file})")
 
 
 def save_manifest(manifest_file: Path, manifest_data: dict):
@@ -447,12 +523,21 @@ def save_manifest(manifest_file: Path, manifest_data: dict):
     atomic_write(manifest_file, json.dumps(manifest_data, indent=2).encode("utf-8"))
 
 
-def cmd_install(is_all: bool, dry_run: bool):
+def cmd_install(is_all: bool, dry_run: bool) -> bool:
     home = Path.home()
     clients = get_detected_clients(home)
-    backup_dir = None if dry_run else create_unique_backup_dir(home)
     manifest_file = home / ".huynex/installed_manifest.json"
-    manifest_data = load_manifest(manifest_file)
+
+    try:
+        manifest_data = load_manifest(manifest_file)
+    except ManifestCorruptError as e:
+        print("=" * 65)
+        print(f"❌ LỖI NGHIÊM TRỌNG (P0 DATA SAFETY): {e}")
+        print("   Hủy thao tác cài đặt để bảo vệ metadata và bản sao lưu hiện có.")
+        print(f"   Vui lòng kiểm tra/phục hồi {manifest_file} trước khi tiếp tục.")
+        print("=" * 65)
+        return False
+
     active_entries = manifest_data.get("entries", {})
 
     print("=" * 65)
@@ -547,72 +632,105 @@ def cmd_install(is_all: bool, dry_run: bool):
 
     if dry_run:
         print("\n[Dry-run] Hoàn tất kiểm tra trước. Không có thay đổi nào được ghi vào đĩa.")
-        return
+        return True
 
-    # Thực thi cài đặt và sao lưu
-    backup_records = []
+    # Thực thi cài đặt trong phạm vi khóa độc quyền và Write-Ahead Manifest Checkpointing
+    try:
+        lock = LifecycleLock(home)
+        lock.__enter__()
+    except LifecycleLockError as e:
+        print(f"\n❌ LỖI KHÓA ĐỒNG THỜI (CONCURRENT LIFECYCLE): {e}")
+        return False
 
-    for act, desc, dst, new_b, old_b, existed in plan:
-        bk_file_str = None
-        sha_before = None
-        if old_b is not None:
-            bk_file, sha_before = write_immutable_backup_file(
-                backup_dir, len(backup_records), dst, old_b
-            )
-            bk_file_str = str(bk_file)
-            backup_records.append({
-                "path": str(dst),
-                "backup_file": bk_file_str,
-                "sha256_before": sha_before
-            })
+    try:
+        backup_dir = create_unique_backup_dir(home)
+        backup_records = []
 
-        mode = 0o755 if "guardrail" in dst.name else None
-        atomic_write(dst, new_b, mode=mode)
+        for act, desc, dst, new_b, old_b, existed in plan:
+            # Symlink safety: không tự ý ghi đè/phá hủy symbolic link của người dùng
+            if dst.is_symlink():
+                print(f"  🛡️ Bỏ qua symbolic link của người dùng để bảo toàn liên kết: {dst}")
+                continue
 
-        # Ghi nhận trạng thái sở hữu tệp (P0 Data Safety - Immutable Ownership)
-        prev_entry = active_entries.get(str(dst), {})
-        if prev_entry and "existed_prior" in prev_entry:
-            initial_existed_prior = prev_entry["existed_prior"]
-            initial_backup_file = prev_entry.get("backup_file")
-            initial_sha_before = prev_entry.get("sha256_before")
-            initial_ownership = prev_entry.get("ownership")
-        else:
-            initial_existed_prior = existed
-            initial_backup_file = None
-            initial_sha_before = None
-            initial_ownership = "EXISTED_PRIOR_USER" if existed else "HUYNEX_CREATED"
+            bk_file_str = None
+            sha_before = None
+            if old_b is not None:
+                bk_file, sha_before = write_immutable_backup_file(
+                    backup_dir, len(backup_records), dst, old_b
+                )
+                bk_file_str = str(bk_file)
+                backup_records.append({
+                    "path": str(dst),
+                    "backup_file": bk_file_str,
+                    "sha256_before": sha_before
+                })
 
-        active_entries[str(dst)] = {
-            "type": act,
-            "managed_mode": "injected_block" if act == "ROOT_INSTRUCTION" and initial_existed_prior is True else "managed_file",
-            "existed_prior": initial_existed_prior,
-            "ownership": initial_ownership,
-            "backup_file": initial_backup_file or bk_file_str,
-            "sha256_before": initial_sha_before or sha_before,
-            "sha256_installed": hashlib.sha256(new_b).hexdigest(),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
-        print(f"  ✓ Đã ghi: {dst}")
+            # Ghi nhận trạng thái sở hữu tệp (P0 Data Safety - Immutable Ownership)
+            prev_entry = active_entries.get(str(dst), {})
+            if prev_entry and "existed_prior" in prev_entry:
+                initial_existed_prior = prev_entry["existed_prior"]
+                initial_backup_file = prev_entry.get("backup_file")
+                initial_sha_before = prev_entry.get("sha256_before")
+                initial_ownership = prev_entry.get("ownership")
+            else:
+                initial_existed_prior = existed
+                initial_backup_file = None
+                initial_sha_before = None
+                initial_ownership = "EXISTED_PRIOR_USER" if existed else "HUYNEX_CREATED"
 
-    # Đăng ký hook vào Claude settings.json
-    if claude_info["installed"]:
-        hook_path = claude_info["hooks_dir"] / "guardrail.py"
-        settings_file = claude_info["settings_file"]
-        registered = configure_claude_guardrail(settings_file, hook_path, dry_run=False)
-        if registered:
-            print(f"  ✓ Đã kích hoạt PreToolUse hook trong: {settings_file}")
+            # WRITE-AHEAD CHECKPOINT: Lưu manifest TRƯỚC khi ghi file đích để đảm bảo crash consistency
+            active_entries[str(dst)] = {
+                "type": act,
+                "managed_mode": "injected_block" if act == "ROOT_INSTRUCTION" and initial_existed_prior is True else "managed_file",
+                "existed_prior": initial_existed_prior,
+                "ownership": initial_ownership,
+                "backup_file": initial_backup_file or bk_file_str,
+                "sha256_before": initial_sha_before or sha_before,
+                "sha256_installed": prev_entry.get("sha256_installed"),
+                "status": "IN_PROGRESS",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            manifest_data["version"] = KIT_VERSION
+            manifest_data["status"] = "INSTALL_IN_PROGRESS"
+            manifest_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+            manifest_data["entries"] = active_entries
+            save_manifest(manifest_file, manifest_data)
 
-    # Lưu bản sao lưu và manifest cập nhật
-    if backup_records:
-        atomic_write(backup_dir / "manifest.json", json.dumps(backup_records, indent=2).encode("utf-8"))
-        print(f"\n🛡️ Bản sao lưu an toàn được lưu tại: {backup_dir}")
+            # Thực hiện ghi nguyên tử (atomic write)
+            mode = 0o755 if "guardrail" in dst.name else None
+            atomic_write(dst, new_b, mode=mode)
 
-    manifest_data["updated_at"] = datetime.now(timezone.utc).isoformat()
-    manifest_data["entries"] = active_entries
-    save_manifest(manifest_file, manifest_data)
+            # POST-MUTATION CHECKPOINT: Đánh dấu tệp đã cài hoàn chỉnh kèm SHA-256 thực tế
+            active_entries[str(dst)]["sha256_installed"] = hashlib.sha256(new_b).hexdigest()
+            active_entries[str(dst)]["status"] = "INSTALLED"
+            active_entries[str(dst)]["updated_at"] = datetime.now(timezone.utc).isoformat()
+            save_manifest(manifest_file, manifest_data)
+            print(f"  ✓ Đã ghi: {dst}")
 
-    print("\n🎉 CÀI ĐẶT HOÀN TẤT VÀ KIỂM CHỨNG THÀNH CÔNG!")
-    print("Dùng 'python scripts/install.py --doctor' để kiểm tra tình trạng hệ thống bất cứ lúc nào.")
+        # Đăng ký hook vào Claude settings.json
+        if claude_info["installed"]:
+            hook_path = claude_info["hooks_dir"] / "guardrail.py"
+            settings_file = claude_info["settings_file"]
+            registered = configure_claude_guardrail(settings_file, hook_path, dry_run=False)
+            if registered:
+                print(f"  ✓ Đã kích hoạt PreToolUse hook trong: {settings_file}")
+
+        # Lưu bản sao lưu và hoàn tất giao dịch manifest
+        if backup_records:
+            atomic_write(backup_dir / "manifest.json", json.dumps(backup_records, indent=2).encode("utf-8"))
+            print(f"\n🛡️ Bản sao lưu an toàn được lưu tại: {backup_dir}")
+
+        manifest_data["version"] = KIT_VERSION
+        manifest_data["status"] = "INSTALLED"
+        manifest_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        manifest_data["entries"] = active_entries
+        save_manifest(manifest_file, manifest_data)
+
+        print("\n🎉 CÀI ĐẶT HOÀN TẤT VÀ KIỂM CHỨNG THÀNH CÔNG!")
+        print("Dùng 'python scripts/install.py --doctor' để kiểm tra tình trạng hệ thống bất cứ lúc nào.")
+        return True
+    finally:
+        lock.__exit__(None, None, None)
 
 
 def cmd_doctor() -> bool:
@@ -713,6 +831,24 @@ def cmd_doctor() -> bool:
             print(f"  ❌ File cấu hình Claude Code không tồn tại: {settings_file}")
             all_passed = False
 
+    # 4. Kiểm tra tính toàn vẹn Manifest
+    print("\n[4] Kiểm tra tính toàn vẹn Manifest & Trạng thái Giao dịch:")
+    manifest_file = home / ".huynex/installed_manifest.json"
+    if manifest_file.exists():
+        try:
+            m_data = load_manifest(manifest_file)
+            m_status = m_data.get("status", "INSTALLED")
+            if m_status in ("UNINSTALL_INCOMPLETE", "INSTALL_IN_PROGRESS"):
+                print(f"  ❌ Manifest ở trạng thái giao dịch chưa hoàn tất: {m_status}")
+                all_passed = False
+            else:
+                print(f"  ✓ Manifest hợp lệ: {len(m_data.get('entries', {}))} mục được quản lý (status={m_status}).")
+        except ManifestCorruptError as e:
+            print(f"  ❌ Manifest bị hỏng: {e}")
+            all_passed = False
+    else:
+        print("  ⚠️ Chưa tìm thấy manifest cài đặt (~/.huynex/installed_manifest.json).")
+
     print("\n" + "=" * 65)
     if all_passed:
         print("🎉 DOCTOR VERDICT: TOÀN BỘ HỆ THỐNG ĐẠT CHUẨN HOẠT ĐỘNG TỐT!")
@@ -725,157 +861,183 @@ def cmd_doctor() -> bool:
 def cmd_uninstall() -> bool:
     """Gỡ bỏ an toàn, phi hủy diệt các tệp do Agent Kit quản lý với cơ chế Transactional Audit.
     P0 DATA SAFETY:
-    1. Tuyệt đối KHÔNG xóa file chỉ dẫn gốc (CLAUDE.md, etc.) mà chỉ bóc tách tag, bảo toàn byte-for-byte.
-    2. Nếu file skill/rule từng tồn tại trước đó: PHỤC HỒI NGUYÊN TRẠNG TỪ BẢN SAO LƯU (.bak).
-    3. Nếu file legacy v0.3.1 có ownership UNKNOWN: TUYỆT ĐỐI KHÔNG XÓA, giữ nguyên và lưu archive.
-    4. Nếu file do kit tạo mới bị người dùng sửa: BẢO TỒN VÀO THƯ MỤC ARCHIVE, không xóa mất mát.
-    5. Giao dịch an toàn: Nếu có bất kỳ bước phục hồi nào thất bại, BẢO LƯU MANIFEST để retry, không báo thành công ảo."""
+    1. Manifest hỏng/không đọc được -> CHẶN GỠ CÀI ĐẶT NGAY LẬP TỨC, bảo toàn manifest & toàn bộ file.
+    2. Tuyệt đối KHÔNG xóa file chỉ dẫn gốc (CLAUDE.md, etc.) mà chỉ bóc tách tag, bảo toàn byte-for-byte.
+    3. Phục hồi từ backup (.bak) BẮT BUỘC xác minh mật mã SHA-256 trước khi ghi; sai lệch hash -> DỪNG & BÁO LỖI.
+    4. Nếu file legacy v0.3.1 có ownership UNKNOWN: TUYỆT ĐỐI KHÔNG XÓA, giữ nguyên và lưu archive.
+    5. Nếu file do kit tạo mới bị người dùng sửa: BẢO TỒN VÀO THƯ MỤC ARCHIVE, không xóa mất mát.
+    6. Giao dịch an toàn: Nếu có bất kỳ bước phục hồi nào thất bại, BẢO LƯU MANIFEST để retry, không báo thành công ảo."""
     home = Path.home()
     manifest_file = home / ".huynex/installed_manifest.json"
     print("=" * 65)
     print("HUYNEX AGENT KIT — TRANSACTIONAL UNINSTALLER & RESTORER")
     print("=" * 65)
 
-    if not manifest_file.is_file():
-        print("❌ Không tìm thấy manifest cài đặt. Tiến hành dọn dẹp theo heuristics an toàn...")
-        manifest_data = {"entries": {}}
-    else:
-        manifest_data = load_manifest(manifest_file)
+    try:
+        lock = LifecycleLock(home)
+        lock.__enter__()
+    except LifecycleLockError as e:
+        print(f"❌ LỖI KHÓA ĐỒNG THỜI (CONCURRENT LIFECYCLE): {e}")
+        return False
 
-    entries = manifest_data.get("entries", {})
-    cleaned_count = 0
-    restored_count = 0
-    preserved_count = 0
-    unlinked_count = 0
-    failed_entries = {}
+    try:
+        if not manifest_file.exists():
+            print("⚠️ Không tìm thấy manifest cài đặt. Tiến hành dọn dẹp theo heuristics an toàn...")
+            manifest_data = {"version": KIT_VERSION, "entries": {}}
+        else:
+            try:
+                manifest_data = load_manifest(manifest_file)
+            except ManifestCorruptError as e:
+                print(f"❌ LỖI NGHIÊM TRỌNG (P0 DATA SAFETY): {e}")
+                print("   CHẶN GỠ CÀI ĐẶT để tránh mất liên kết phục hồi giữa tệp người dùng và bản sao lưu (.bak).")
+                print(f"   Manifest hỏng được giữ nguyên tại: {manifest_file}")
+                return False
 
-    # 1. Gỡ bỏ các tệp được ghi nhận trong manifest
-    for path_str, meta in list(entries.items()):
-        p = Path(path_str)
-        if not p.is_file():
-            continue
+        entries = manifest_data.get("entries", {})
+        cleaned_count = 0
+        restored_count = 0
+        preserved_count = 0
+        unlinked_count = 0
+        failed_entries = {}
 
-        managed_mode = meta.get("managed_mode", "managed_file")
-        existed_prior = meta.get("existed_prior", False)
-        ownership = meta.get("ownership", "UNKNOWN")
-        item_type = meta.get("type", "")
-        backup_file = meta.get("backup_file")
-        installed_sha = meta.get("sha256_installed")
-        current_sha = sha256_file(p)
+        # 1. Gỡ bỏ các tệp được ghi nhận trong manifest
+        for path_str, meta in list(entries.items()):
+            p = Path(path_str)
+            if p.is_symlink():
+                print(f"  🛡️ Bỏ qua symbolic link của người dùng: {p}")
+                continue
+            if not p.is_file():
+                continue
 
-        # TRƯỜNG HỢP 1: ROOT_INSTRUCTION hoặc file tiêm block quản trị
-        if item_type == "ROOT_INSTRUCTION" or managed_mode == "injected_block":
-            cleaned_text, was_stripped = strip_rules_block_safely(p)
-            if was_stripped:
-                if not cleaned_text.strip() and existed_prior is False:
+            managed_mode = meta.get("managed_mode", "managed_file")
+            existed_prior = meta.get("existed_prior", False)
+            ownership = meta.get("ownership", "UNKNOWN")
+            item_type = meta.get("type", "")
+            backup_file = meta.get("backup_file")
+            expected_sha_before = meta.get("sha256_before")
+            installed_sha = meta.get("sha256_installed")
+            current_sha = sha256_file(p)
+
+            # TRƯỜNG HỢP 1: ROOT_INSTRUCTION hoặc file tiêm block quản trị
+            if item_type == "ROOT_INSTRUCTION" or managed_mode == "injected_block":
+                cleaned_text, was_stripped = strip_rules_block_safely(p)
+                if was_stripped:
+                    if not cleaned_text.strip() and existed_prior is False:
+                        try:
+                            p.unlink(missing_ok=True)
+                            unlinked_count += 1
+                            print(f"  ✓ Đã xóa file rỗng do HuyNex tạo mới: {p}")
+                        except Exception as e:
+                            failed_entries[path_str] = {"error": f"Failed to unlink empty root: {e}", "meta": meta}
+                    else:
+                        # Byte-for-byte fidelity kèm xác minh SHA-256 backup
+                        if backup_file and Path(backup_file).is_file():
+                            if current_sha == installed_sha:
+                                ok_bk, bk_bytes, err_bk = verify_backup_integrity(Path(backup_file), expected_sha_before)
+                                if not ok_bk:
+                                    print(f"  ❌ LỖI TOÀN VẸN BACKUP ({p}): {err_bk}")
+                                    failed_entries[path_str] = {"error": err_bk, "meta": meta}
+                                    continue
+                                atomic_write(p, bk_bytes)
+                            else:
+                                # Người dùng có chỉnh sửa thêm trong khi cài -> archive và ghi cleaned_text
+                                archived = preserve_user_modified_file(p, home)
+                                preserved_count += 1
+                                print(f"  🛡️ Phát hiện chỉnh sửa cá nhân trong root instruction: Bảo tồn tại {archived}")
+                                atomic_write(p, cleaned_text.encode("utf-8"))
+                        else:
+                            atomic_write(p, cleaned_text.encode("utf-8"))
+                        cleaned_count += 1
+                        print(f"  ✓ Đã gỡ khối quản trị, BẢO TOÀN byte-for-byte nội dung riêng của người dùng: {p}")
+
+            # TRƯỜNG HỢP 2: Tệp skill/rule ĐÃ TỒN TẠI TỪ TRƯỚC (existed_prior == True)
+            elif existed_prior is True and managed_mode == "managed_file":
+                # P0-01 DATA SAFETY: Nếu người dùng đã chỉnh sửa sau khi cài đặt, BẮT BUỘC lưu trữ bảo tồn!
+                if installed_sha and current_sha and current_sha != installed_sha:
+                    archived = preserve_user_modified_file(p, home)
+                    preserved_count += 1
+                    print(f"  🛡️ Tệp gốc {p} đã được chỉnh sửa sau khi cài: Bảo tồn tại {archived}")
+
+                if backup_file and Path(backup_file).is_file():
+                    ok_bk, bk_bytes, err_bk = verify_backup_integrity(Path(backup_file), expected_sha_before)
+                    if not ok_bk:
+                        print(f"  ❌ LỖI TOÀN VẸN BACKUP ({p}): {err_bk}. Từ chối ghi đè tệp đích.")
+                        failed_entries[path_str] = {"error": err_bk, "meta": meta}
+                        continue
+                    atomic_write(p, bk_bytes)
+                    restored_count += 1
+                    print(f"  ✓ PHỤC HỒI NGUYÊN TRẠNG (đã xác minh SHA-256) tệp gốc của người dùng từ backup: {p}")
+                else:
+                    # File vốn là của người dùng nhưng thiếu backup -> Giữ nguyên, KHÔNG xóa, ghi nhận vào failed
+                    print(f"  ⚠️ Cảnh báo: Tệp gốc của người dùng ({p}) được giữ nguyên (không tìm thấy bản backup).")
+                    failed_entries[path_str] = {"error": "Original user file retained (backup file missing)", "meta": meta}
+
+            # TRƯỜNG HỢP 3: Tệp di trú từ v0.3.1 thiếu thông tin ownership (P0-01 DATA SAFETY)
+            elif existed_prior == "UNKNOWN" or ownership == "UNKNOWN_LEGACY_V031":
+                # TUYỆT ĐỐI KHÔNG XÓA file khi không chắc chắn quyền sở hữu ban đầu!
+                archived = preserve_user_modified_file(p, home)
+                preserved_count += 1
+                print(f"  🛡️ Tệp có nguồn gốc chưa xác minh (v0.3.1 legacy): Giữ nguyên tại chỗ và bảo tồn tại {archived}")
+
+            # TRƯỜNG HỢP 4: Tệp do HuyNex tạo mới hoàn toàn (existed_prior == False)
+            else:
+                if installed_sha and current_sha and current_sha != installed_sha:
+                    # Bảo vệ file người dùng đã chỉnh sửa với tên chống trùng lặp tuyệt đối
+                    archived = preserve_user_modified_file(p, home)
+                    preserved_count += 1
+                    print(f"  🛡️ Tệp {p} đã được người dùng chỉnh sửa sau khi cài: Bảo tồn tại {archived} và giữ nguyên.")
+                else:
                     try:
                         p.unlink(missing_ok=True)
                         unlinked_count += 1
-                        print(f"  ✓ Đã xóa file rỗng do HuyNex tạo mới: {p}")
-                    except Exception as e:
-                        failed_entries[path_str] = {"error": f"Failed to unlink empty root: {e}", "meta": meta}
-                else:
-                    # Byte-for-byte fidelity:
-                    # Nếu có backup_file gốc:
-                    if backup_file and Path(backup_file).is_file():
-                        bk_bytes = Path(backup_file).read_bytes()
-                        # Nếu người dùng không sửa file sau khi cài:
-                        if current_sha == installed_sha:
-                            atomic_write(p, bk_bytes)
-                        else:
-                            # Người dùng có chỉnh sửa thêm trong khi cài -> archive và ghi cleaned_text
-                            archived = preserve_user_modified_file(p, home)
-                            preserved_count += 1
-                            print(f"  🛡️ Phát hiện chỉnh sửa cá nhân trong root instruction: Bảo tồn tại {archived}")
-                            atomic_write(p, cleaned_text.encode("utf-8"))
-                    else:
-                        atomic_write(p, cleaned_text.encode("utf-8"))
+                        print(f"  ✓ Đã xóa file do HuyNex cài: {p}")
+                    except OSError as e:
+                        failed_entries[path_str] = {"error": f"Failed to unlink HuyNex file: {e}", "meta": meta}
+                        print(f"  ❌ Lỗi khi xóa {p}: {e}")
+
+        # 2. Quét dọn fallback đối với các file root nếu manifest bị thiếu
+        clients = get_detected_clients(home)
+        for c_name, c_info in clients.items():
+            rf = c_info.get("root_file")
+            if rf and rf.is_file() and not rf.is_symlink() and str(rf) not in failed_entries:
+                cleaned_text, was_stripped = strip_rules_block_safely(rf)
+                if was_stripped:
+                    atomic_write(rf, cleaned_text.encode("utf-8"))
                     cleaned_count += 1
-                    print(f"  ✓ Đã gỡ khối quản trị, BẢO TOÀN byte-for-byte nội dung riêng của người dùng: {p}")
+                    print(f"  ✓ Fallback: Đã gỡ khối quản trị khỏi {c_name} root: {rf}")
 
-        # TRƯỜNG HỢP 2: Tệp skill/rule ĐÃ TỒN TẠI TỪ TRƯỚC (existed_prior == True)
-        elif existed_prior is True and managed_mode == "managed_file":
-            # P0-01 DATA SAFETY: Nếu người dùng đã chỉnh sửa sau khi cài đặt, BẮT BUỘC lưu trữ bảo tồn!
-            if installed_sha and current_sha and current_sha != installed_sha:
-                archived = preserve_user_modified_file(p, home)
-                preserved_count += 1
-                print(f"  🛡️ Tệp gốc {p} đã được chỉnh sửa sau khi cài: Bảo tồn tại {archived}")
+        # 3. Gỡ bỏ đăng ký hook khỏi Claude settings.json
+        claude_settings = clients["Claude Code"]["settings_file"]
+        if claude_settings.is_file():
+            unregistered = unconfigure_claude_guardrail(claude_settings)
+            if unregistered:
+                print(f"  ✓ Đã gỡ bỏ đăng ký PreToolUse hook khỏi: {claude_settings}")
 
-            if backup_file and Path(backup_file).is_file():
-                bk_bytes = Path(backup_file).read_bytes()
-                atomic_write(p, bk_bytes)
-                restored_count += 1
-                print(f"  ✓ PHỤC HỒI NGUYÊN TRẠNG tệp gốc của người dùng từ bản sao lưu: {p}")
-            else:
-                # File vốn là của người dùng nhưng thiếu backup -> Giữ nguyên, KHÔNG xóa, ghi nhận vào failed
-                print(f"  ⚠️ Cảnh báo: Tệp gốc của người dùng ({p}) được giữ nguyên (không tìm thấy bản backup).")
-                failed_entries[path_str] = {"error": "Original user file retained (backup file missing)", "meta": meta}
-
-        # TRƯỜNG HỢP 3: Tệp di trú từ v0.3.1 thiếu thông tin ownership (P0-01 DATA SAFETY)
-        elif existed_prior == "UNKNOWN" or ownership == "UNKNOWN_LEGACY_V031":
-            # TUYỆT ĐỐI KHÔNG XÓA file khi không chắc chắn quyền sở hữu ban đầu!
-            archived = preserve_user_modified_file(p, home)
-            preserved_count += 1
-            print(f"  🛡️ Tệp có nguồn gốc chưa xác minh (v0.3.1 legacy): Giữ nguyên tại chỗ và bảo tồn tại {archived}")
-
-        # TRƯỜNG HỢP 4: Tệp do HuyNex tạo mới hoàn toàn (existed_prior == False)
+        # 4. Kiểm tra giao dịch và lưu trữ manifest nếu chưa hoàn tất
+        if failed_entries:
+            manifest_data["entries"] = {k: v["meta"] for k, v in failed_entries.items()}
+            manifest_data["status"] = "UNINSTALL_INCOMPLETE"
+            manifest_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+            save_manifest(manifest_file, manifest_data)
+            print("\n" + "=" * 65)
+            print(f"⚠️ GỠ CÀI ĐẶT CHƯA HOÀN TẤT ({len(failed_entries)} tệp cần lưu ý):")
+            for f_path, f_info in failed_entries.items():
+                print(f"  • {f_path}: {f_info['error']}")
+            print(f"Manifest đã được bảo lưu tại {manifest_file} để phục vụ retry/kiểm toán.")
+            print("=" * 65)
+            return False
         else:
-            if installed_sha and current_sha and current_sha != installed_sha:
-                # Bảo vệ file người dùng đã chỉnh sửa với tên chống trùng lặp tuyệt đối
-                archived = preserve_user_modified_file(p, home)
-                preserved_count += 1
-                print(f"  🛡️ Tệp {p} đã được người dùng chỉnh sửa sau khi cài: Bảo tồn tại {archived} và giữ nguyên.")
-            else:
-                try:
-                    p.unlink(missing_ok=True)
-                    unlinked_count += 1
-                    print(f"  ✓ Đã xóa file do HuyNex cài: {p}")
-                except OSError as e:
-                    failed_entries[path_str] = {"error": f"Failed to unlink HuyNex file: {e}", "meta": meta}
-                    print(f"  ❌ Lỗi khi xóa {p}: {e}")
-
-    # 2. Quét dọn fallback đối với các file root nếu manifest bị thiếu
-    clients = get_detected_clients(home)
-    for c_name, c_info in clients.items():
-        rf = c_info.get("root_file")
-        if rf and rf.is_file():
-            cleaned_text, was_stripped = strip_rules_block_safely(rf)
-            if was_stripped:
-                atomic_write(rf, cleaned_text.encode("utf-8"))
-                cleaned_count += 1
-                print(f"  ✓ Fallback: Đã gỡ khối quản trị khỏi {c_name} root: {rf}")
-
-    # 3. Gỡ bỏ đăng ký hook khỏi Claude settings.json
-    claude_settings = clients["Claude Code"]["settings_file"]
-    if claude_settings.is_file():
-        unregistered = unconfigure_claude_guardrail(claude_settings)
-        if unregistered:
-            print(f"  ✓ Đã gỡ bỏ đăng ký PreToolUse hook khỏi: {claude_settings}")
-
-    # 4. Kiểm tra giao dịch và lưu trữ manifest nếu chưa hoàn tất
-    if failed_entries:
-        manifest_data["entries"] = {k: v["meta"] for k, v in failed_entries.items()}
-        manifest_data["status"] = "UNINSTALL_INCOMPLETE"
-        manifest_data["updated_at"] = datetime.now(timezone.utc).isoformat()
-        save_manifest(manifest_file, manifest_data)
-        print("\n" + "=" * 65)
-        print(f"⚠️ GỠ CÀI ĐẶT CHƯA HOÀN TẤT ({len(failed_entries)} tệp cần lưu ý):")
-        for f_path, f_info in failed_entries.items():
-            print(f"  • {f_path}: {f_info['error']}")
-        print(f"Manifest đã được bảo lưu tại {manifest_file} để phục vụ retry/kiểm toán.")
-        print("=" * 65)
-        return False
-    else:
-        manifest_file.unlink(missing_ok=True)
-        print("\n" + "=" * 65)
-        print(f"🎉 GỠ CÀI ĐẶT HOÀN TẤT VÀ BẢO TOÀN DỮ LIỆU:")
-        print(f"  • {unlinked_count} tệp HuyNex sạch sẽ đã xóa")
-        print(f"  • {cleaned_count} tệp root được gỡ tag quản trị, giữ nguyên nội dung cá nhân")
-        print(f"  • {restored_count} tệp gốc có sẵn của người dùng được PHỤC HỒI 100% từ backup")
-        print(f"  • {preserved_count} tệp người dùng tự sửa sau khi cài được BẢO TỒN an toàn")
-        print("=" * 65)
-        return True
-    print("=" * 65)
+            manifest_file.unlink(missing_ok=True)
+            print("\n" + "=" * 65)
+            print(f"🎉 GỠ CÀI ĐẶT HOÀN TẤT VÀ BẢO TOÀN DỮ LIỆU:")
+            print(f"  • {unlinked_count} tệp HuyNex sạch sẽ đã xóa")
+            print(f"  • {cleaned_count} tệp root được gỡ tag quản trị, giữ nguyên nội dung cá nhân")
+            print(f"  • {restored_count} tệp gốc có sẵn của người dùng được PHỤC HỒI 100% từ backup")
+            print(f"  • {preserved_count} tệp người dùng tự sửa sau khi cài được BẢO TỒN an toàn")
+            print("=" * 65)
+            return True
+    finally:
+        lock.__exit__(None, None, None)
 
 
 def main():
@@ -895,7 +1057,9 @@ def main():
         ok = cmd_uninstall()
         sys.exit(0 if ok else 1)
     elif args.all or args.check:
-        cmd_install(is_all=args.all, dry_run=args.check)
+        ok = cmd_install(is_all=args.all, dry_run=args.check)
+        if not ok:
+            sys.exit(1)
         if args.auto_update and not args.check:
             update_script = SCRIPTS_DIR / "update.py"
             if update_script.is_file():

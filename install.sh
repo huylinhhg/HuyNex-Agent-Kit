@@ -44,16 +44,24 @@ fi
 
 INSTALL_DIR="${HOME}/.huynex/agent-kit"
 REPO_URL="https://github.com/huylinhhg/HuyNex-Agent-Kit.git"
+TARGET_REF="${HUYNEX_REF:-main}"
 
-echo -e "${BLUE}▶ [1/3] Đang đồng bộ kho mã nguồn HuyNex Agent Kit...${NC}"
+echo -e "${BLUE}▶ [1/3] Đang đồng bộ kho mã nguồn HuyNex Agent Kit (ref: ${TARGET_REF})...${NC}"
 if [ -d "$INSTALL_DIR/.git" ]; then
-    echo "  → Cập nhật bản mới nhất tại $INSTALL_DIR"
-    git -C "$INSTALL_DIR" pull --ff-only origin main
+    echo "  → Cập nhật tại $INSTALL_DIR (ref: ${TARGET_REF})"
+    git -C "$INSTALL_DIR" fetch --depth 1 origin "$TARGET_REF"
+    git -C "$INSTALL_DIR" checkout --force FETCH_HEAD
 else
-    echo "  → Tải bản mới nhất về $INSTALL_DIR"
+    echo "  → Tải về $INSTALL_DIR (ref: ${TARGET_REF})"
     mkdir -p "$(dirname "$INSTALL_DIR")"
-    git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
+    git clone --depth 1 --branch "$TARGET_REF" "$REPO_URL" "$INSTALL_DIR" 2>/dev/null || {
+        git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
+        git -C "$INSTALL_DIR" fetch --depth 1 origin "$TARGET_REF"
+        git -C "$INSTALL_DIR" checkout --force FETCH_HEAD
+    }
 fi
+INSTALLED_SHA="$(git -C "$INSTALL_DIR" rev-parse --short HEAD)"
+echo "  ✓ Đã khóa nguồn tại commit: ${INSTALLED_SHA} (Set HUYNEX_REF=<tag|sha> để cố định phiên bản)"
 
 # 3. Kích hoạt cài đặt qua Python Lifecycle Engine
 echo -e "${BLUE}▶ [2/3] Đang cài đặt Kỹ năng, 9 Modules Quy tắc và Hard Guardrails...${NC}"

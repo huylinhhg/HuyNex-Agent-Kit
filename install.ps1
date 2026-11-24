@@ -31,14 +31,22 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
 
 $installDir = Join-Path $env:USERPROFILE ".huynex\agent-kit"
 $repoUrl = "https://github.com/huylinhhg/HuyNex-Agent-Kit.git"
+$targetRef = if ($env:HUYNEX_REF) { $env:HUYNEX_REF } else { "main" }
 
-Write-Host "▶ [1/3] Đang đồng bộ kho mã nguồn HuyNex Agent Kit..." -ForegroundColor Green
+Write-Host "▶ [1/3] Đang đồng bộ kho mã nguồn HuyNex Agent Kit (ref: $targetRef)..." -ForegroundColor Green
 if (Test-Path (Join-Path $installDir ".git")) {
-    git -C $installDir pull --ff-only origin main
+    git -C $installDir fetch --depth 1 origin $targetRef
+    git -C $installDir checkout --force FETCH_HEAD
 } else {
     New-Item -ItemType Directory -Force -Path (Split-Path $installDir) | Out-Null
     git clone --depth 1 $repoUrl $installDir
+    if ($targetRef -ne "main") {
+        git -C $installDir fetch --depth 1 origin $targetRef
+        git -C $installDir checkout --force FETCH_HEAD
+    }
 }
+$installedSha = (git -C $installDir rev-parse --short HEAD)
+Write-Host "  ✓ Đã khóa nguồn tại commit: $installedSha (Set `$env:HUYNEX_REF='<tag|sha>' để cố định phiên bản)" -ForegroundColor Cyan
 
 # 3. Kích hoạt cài đặt qua Python Lifecycle Engine
 Write-Host "▶ [2/3] Đang cài đặt Kỹ năng, 9 Modules Quy tắc và Hard Guardrails..." -ForegroundColor Green

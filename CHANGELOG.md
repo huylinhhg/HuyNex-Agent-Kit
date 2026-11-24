@@ -3,6 +3,45 @@
 Tất cả các thay đổi đáng chú ý của dự án **HuyNex Agent Kit** sẽ được ghi lại trong tệp này.
 Định dạng dựa trên [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/) và tuân thủ [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.6] - 2026-11-24
+
+### 🛡️ Security & Data Safety (Stable Release Gate Hardening)
+- **Fail-Closed Corrupt Manifest Handling (`ManifestCorruptError`)**: `load_manifest()` no longer swallows JSON/IO/schema errors into an empty manifest. Any unreadable or corrupt `installed_manifest.json` immediately blocks `install`, `uninstall`, and `doctor` (non-zero exit) while preserving the manifest and all user files intact.
+- **Cryptographic SHA-256 Backup Verification (`verify_backup_integrity`)**: `cmd_uninstall()` verifies the SHA-256 digest of every `.bak` file against `sha256_before` prior to restoration. Any hash mismatch refuses overwrite, records `UNINSTALL_INCOMPLETE`, and exits non-zero.
+- **Write-Ahead Manifest Checkpointing (Crash Consistency)**: `cmd_install()` checkpoints the manifest atomically BEFORE and AFTER every file mutation (`status: "INSTALL_IN_PROGRESS"` -> `"INSTALLED"`), enabling full byte-for-byte rollback via `cmd_uninstall()` even after mid-install crashes.
+- **Cross-Process Lifecycle Locking (`LifecycleLock`)**: Exclusive atomic lock (`O_CREAT | O_EXCL`) at `~/.huynex/.lifecycle.lock` prevents concurrent `install`/`uninstall` processes from racing on manifests or backups.
+- **Symlink Safety**: `install.py` skips user symbolic links instead of silently overwriting or unlinking them.
+- **Fault-Injection & Concurrency Test Suite (`tests/test_fault_injection.py`)**: 5 new adversarial tests covering corrupt manifests, tampered backups, mid-install crashes, lock contention, and symlinks (50/50 total tests).
+- **Release Integrity**: Synchronized `VERSION`, `README.md`, `BENCHMARKS.md`, `CHANGELOG.md`, and added `HUYNEX_REF` pinned ref support to `install.sh` and `install.ps1`.
+
+## [0.3.5] - 2026-11-24
+
+### 🔧 Fixed
+- **Legacy v0.3.1 Manifest Ownership**: Migrated v0.3.1 entries are strictly tagged `existed_prior: "UNKNOWN"` / `ownership: "UNKNOWN_LEGACY_V031"` and are never deleted on uninstall.
+- **Collision-Free Immutable Backups**: Microsecond backup directory timestamps, 8-char path hashes, exclusive `xb` creation, `fsync`, and read-only `0o444` permissions.
+- **Byte-for-Byte Fidelity & Transactional Uninstall**: Preserved `CRLF`/`LF` line endings and trailing whitespace; retained manifest with `UNINSTALL_INCOMPLETE` on partial uninstall failure.
+- **State Machine Lifecycle Regression Suite (`tests/test_state_machine_lifecycle.py`)** and explicit 3-tier verification taxonomy in `COMPATIBILITY.md`.
+
+## [0.3.4] - 2026-11-24
+
+### 🔧 Fixed
+- Preserved post-install user modifications before restoring backups; collision-free archiving; dynamic acceptance criteria in `huynex-distill --benchmark`; mandatory multi-agent smoke test in CI.
+
+## [0.3.3] - 2026-11-24
+
+### 🔧 Fixed
+- Full UTF-8 subprocess encoding fixes across Windows CI; achieved first 9/9 green GitHub Actions matrix (Ubuntu, macOS, Windows x Python 3.10–3.12).
+
+## [0.3.2] - 2026-11-24
+
+### 🔧 Fixed
+- Eliminated destructive root file deletion on uninstall; fail-closed guardrail parsing; modularized 9 rules with Claude Code `paths:` scoping and valid Cursor `.mdc` YAML frontmatter.
+
+## [0.3.1] - 2026-11-23
+
+### 🚀 Added
+- Added `distill/` engine, `bin/huynex-distill` CLI, unit/adversarial test suite, cross-platform GitHub Actions CI, and security documentation.
+
 ## [0.3.0] - 2026-11-18
 
 ### 🚀 Added
