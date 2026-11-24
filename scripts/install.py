@@ -137,7 +137,10 @@ class LifecycleLock:
 
     def __enter__(self):
         self._verify_lock_path_safety()
-        self.lock_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.lock_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            raise LifecycleLockError(f"Cannot create lifecycle lock directory {self.lock_dir}: {e}")
         # Re-verify after mkdir in case an ancestor was swapped
         self._verify_lock_path_safety()
 
@@ -157,18 +160,12 @@ class LifecycleLock:
                         )
                     raise LifecycleLockError(f"Cannot open lifecycle lock file {self.lock_path}: {e}")
 
-                # Ensure descriptor is a regular file and matches inode
+                # Ensure descriptor is a regular file
                 try:
                     stat_res = os.fstat(fd)
                     if not stat.S_ISREG(stat_res.st_mode):
                         os.close(fd)
                         raise LifecycleLockError(f"Security violation: {self.lock_path} is not a regular file.")
-                    lstat_res = os.lstat(str(self.lock_path))
-                    if stat_res.st_ino != lstat_res.st_ino or stat_res.st_dev != lstat_res.st_dev:
-                        os.close(fd)
-                        raise LifecycleLockError(
-                            f"Security violation: lock descriptor does not match inode at {self.lock_path}."
-                        )
                 except OSError as e:
                     os.close(fd)
                     raise LifecycleLockError(f"Cannot verify lock descriptor: {e}")
@@ -184,18 +181,50 @@ class LifecycleLock:
                         "Wait for it to finish."
                     )
 
-                # Check if file was unlinked before lock was acquired
+                # Post-flock verification (P0-01 & P0-02 Kernel Lock Inode Race / Symlink defense):
+                # While holding exclusive kernel lock, verify descriptor matches active path.
                 try:
-                    stat_res = os.fstat(fd)
-                    if stat_res.st_nlink == 0:
+                    fstat_res = os.fstat(fd)
+                    lstat_res = os.lstat(str(self.lock_path))
+
+                    if stat.S_ISLNK(lstat_res.st_mode):
+                        try:
+                            fcntl.flock(fd, fcntl.LOCK_UN)
+                        except OSError:
+                            pass
+                        os.close(fd)
+                        raise LifecycleLockError(
+                            f"Security violation: lifecycle lock file {self.lock_path} is a symbolic link."
+                        )
+
+                    # If file was unlinked, renamed, or replaced by another inode before lock was acquired:
+                    # Release lock on detached inode, close, and retry opening current lock_path.
+                    if (
+                        fstat_res.st_nlink == 0
+                        or fstat_res.st_ino != lstat_res.st_ino
+                        or fstat_res.st_dev != lstat_res.st_dev
+                    ):
                         try:
                             fcntl.flock(fd, fcntl.LOCK_UN)
                         except OSError:
                             pass
                         os.close(fd)
                         continue
-                except OSError:
-                    pass
+                except FileNotFoundError:
+                    # Lockfile unlinked right after flock; retry
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+                    except OSError:
+                        pass
+                    os.close(fd)
+                    continue
+                except OSError as e:
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+                    except OSError:
+                        pass
+                    os.close(fd)
+                    raise LifecycleLockError(f"Cannot verify lock descriptor after flock: {e}")
 
                 self._fd = fd
                 self._acquired = True
@@ -203,11 +232,19 @@ class LifecycleLock:
                 return self
         else:
             import msvcrt
+            self._verify_lock_path_safety()
             flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_BINARY", 0)
             try:
                 fd = os.open(str(self.lock_path), flags, 0o600)
             except OSError as e:
                 raise LifecycleLockError(f"Cannot open lifecycle lock file {self.lock_path}: {e}")
+
+            # Re-verify path safety after opening descriptor (fail-closed)
+            try:
+                self._verify_lock_path_safety()
+            except LifecycleLockError:
+                os.close(fd)
+                raise
 
             # Ensure file has at least 1 byte so locking byte 0 succeeds
             try:
@@ -1229,191 +1266,186 @@ def cmd_uninstall() -> bool:
     print("=" * 65)
 
     try:
-        lock = LifecycleLock(home)
-        lock.__enter__()
-    except LifecycleLockError as e:
-        print(f"❌ LỖI KHÓA ĐỒNG THỜI (CONCURRENT LIFECYCLE): {e}")
-        return False
+        with LifecycleLock(home):
+            if not manifest_file.exists():
+                print("⚠️ Không tìm thấy manifest cài đặt. Tiến hành dọn dẹp theo heuristics an toàn...")
+                manifest_data = {"version": KIT_VERSION, "entries": {}}
+            else:
+                try:
+                    manifest_data = load_manifest(manifest_file)
+                except ManifestCorruptError as e:
+                    print(f"❌ LỖI NGHIÊM TRỌNG (P0 DATA SAFETY): {e}")
+                    print("   CHẶN GỠ CÀI ĐẶT để tránh mất liên kết phục hồi giữa tệp người dùng và bản sao lưu (.bak).")
+                    print(f"   Manifest hỏng được giữ nguyên tại: {manifest_file}")
+                    return False
 
-    try:
-        if not manifest_file.exists():
-            print("⚠️ Không tìm thấy manifest cài đặt. Tiến hành dọn dẹp theo heuristics an toàn...")
-            manifest_data = {"version": KIT_VERSION, "entries": {}}
-        else:
-            try:
-                manifest_data = load_manifest(manifest_file)
-            except ManifestCorruptError as e:
-                print(f"❌ LỖI NGHIÊM TRỌNG (P0 DATA SAFETY): {e}")
-                print("   CHẶN GỠ CÀI ĐẶT để tránh mất liên kết phục hồi giữa tệp người dùng và bản sao lưu (.bak).")
-                print(f"   Manifest hỏng được giữ nguyên tại: {manifest_file}")
-                return False
+            entries = manifest_data.get("entries", {})
+            cleaned_count = 0
+            restored_count = 0
+            preserved_count = 0
+            unlinked_count = 0
+            failed_entries = {}
 
-        entries = manifest_data.get("entries", {})
-        cleaned_count = 0
-        restored_count = 0
-        preserved_count = 0
-        unlinked_count = 0
-        failed_entries = {}
+            # 1. Gỡ bỏ các tệp được ghi nhận trong manifest
+            for path_str, meta in list(entries.items()):
+                p = Path(path_str)
+                if is_path_or_parent_symlink(p, boundary=home):
+                    print(f"  🛡️ Bỏ qua tệp/thư mục symbolic link của người dùng: {p}")
+                    continue
+                if not p.is_file():
+                    continue
 
-        # 1. Gỡ bỏ các tệp được ghi nhận trong manifest
-        for path_str, meta in list(entries.items()):
-            p = Path(path_str)
-            if is_path_or_parent_symlink(p, boundary=home):
-                print(f"  🛡️ Bỏ qua tệp/thư mục symbolic link của người dùng: {p}")
-                continue
-            if not p.is_file():
-                continue
+                managed_mode = meta.get("managed_mode", "managed_file")
+                existed_prior = meta.get("existed_prior", False)
+                ownership = meta.get("ownership", "UNKNOWN")
+                item_type = meta.get("type", "")
+                backup_file = meta.get("backup_file")
+                expected_sha_before = meta.get("sha256_before")
+                installed_sha = meta.get("sha256_installed")
+                expected_after_sha = meta.get("sha256_expected_after")
+                current_sha = sha256_file(p)
 
-            managed_mode = meta.get("managed_mode", "managed_file")
-            existed_prior = meta.get("existed_prior", False)
-            ownership = meta.get("ownership", "UNKNOWN")
-            item_type = meta.get("type", "")
-            backup_file = meta.get("backup_file")
-            expected_sha_before = meta.get("sha256_before")
-            installed_sha = meta.get("sha256_installed")
-            expected_after_sha = meta.get("sha256_expected_after")
-            current_sha = sha256_file(p)
+                # TRƯỜNG HỢP 1: ROOT_INSTRUCTION hoặc file tiêm block quản trị
+                if item_type == "ROOT_INSTRUCTION" or managed_mode == "injected_block":
+                    cleaned_text, was_stripped = strip_rules_block_safely(p)
+                    if was_stripped:
+                        if not cleaned_text.strip() and existed_prior is False:
+                            try:
+                                p.unlink(missing_ok=True)
+                                unlinked_count += 1
+                                print(f"  ✓ Đã xóa file rỗng do HuyNex tạo mới: {p}")
+                            except Exception as e:
+                                failed_entries[path_str] = {"error": f"Failed to unlink empty root: {e}", "meta": meta}
+                        else:
+                            # Byte-for-byte fidelity kèm xác minh SHA-256 backup
+                            if backup_file and Path(backup_file).is_file():
+                                is_unmodified_root = (
+                                    (current_sha == installed_sha)
+                                    or (expected_after_sha and current_sha == expected_after_sha)
+                                )
+                                if is_unmodified_root:
+                                    ok_bk, bk_bytes, err_bk = verify_backup_integrity(Path(backup_file), expected_sha_before)
+                                    if not ok_bk:
+                                        print(f"  ❌ LỖI TOÀN VẸN BACKUP ({p}): {err_bk}")
+                                        failed_entries[path_str] = {"error": err_bk, "meta": meta}
+                                        continue
+                                    atomic_write(p, bk_bytes)
+                                else:
+                                    # Người dùng có chỉnh sửa thêm trong khi cài -> archive và ghi cleaned_text
+                                    archived = preserve_user_modified_file(p, home)
+                                    preserved_count += 1
+                                    print(f"  🛡️ Phát hiện chỉnh sửa cá nhân trong root instruction: Bảo tồn tại {archived}")
+                                    atomic_write(p, cleaned_text.encode("utf-8"))
+                            else:
+                                atomic_write(p, cleaned_text.encode("utf-8"))
+                            cleaned_count += 1
+                            print(f"  ✓ Đã gỡ khối quản trị, BẢO TOÀN byte-for-byte nội dung riêng của người dùng: {p}")
 
-            # TRƯỜNG HỢP 1: ROOT_INSTRUCTION hoặc file tiêm block quản trị
-            if item_type == "ROOT_INSTRUCTION" or managed_mode == "injected_block":
-                cleaned_text, was_stripped = strip_rules_block_safely(p)
-                if was_stripped:
-                    if not cleaned_text.strip() and existed_prior is False:
+                # TRƯỜNG HỢP 2: Tệp skill/rule ĐÃ TỒN TẠI TỪ TRƯỚC (existed_prior == True)
+                elif existed_prior is True and managed_mode == "managed_file":
+                    # P0-01 DATA SAFETY & CRASH GAP: So sánh cả installed_sha, expected_after_sha và expected_sha_before
+                    is_unmodified_pre = False
+                    if current_sha:
+                        if installed_sha and current_sha == installed_sha:
+                            is_unmodified_pre = True
+                        elif expected_after_sha and current_sha == expected_after_sha:
+                            is_unmodified_pre = True
+                        elif expected_sha_before and current_sha == expected_sha_before:
+                            is_unmodified_pre = True
+
+                    if not is_unmodified_pre:
+                        archived = preserve_user_modified_file(p, home)
+                        preserved_count += 1
+                        print(f"  🛡️ Tệp gốc {p} đã được chỉnh sửa sau khi cài: Bảo tồn tại {archived}")
+
+                    if backup_file and Path(backup_file).is_file():
+                        ok_bk, bk_bytes, err_bk = verify_backup_integrity(Path(backup_file), expected_sha_before)
+                        if not ok_bk:
+                            print(f"  ❌ LỖI TOÀN VẸN BACKUP ({p}): {err_bk}. Từ chối ghi đè tệp đích.")
+                            failed_entries[path_str] = {"error": err_bk, "meta": meta}
+                            continue
+                        atomic_write(p, bk_bytes)
+                        restored_count += 1
+                        print(f"  ✓ PHỤC HỒI NGUYÊN TRẠNG (đã xác minh SHA-256) tệp gốc của người dùng từ backup: {p}")
+                    else:
+                        # File vốn là của người dùng nhưng thiếu backup -> Giữ nguyên, KHÔNG xóa, ghi nhận vào failed
+                        print(f"  ⚠️ Cảnh báo: Tệp gốc của người dùng ({p}) được giữ nguyên (không tìm thấy bản backup).")
+                        failed_entries[path_str] = {"error": "Original user file retained (backup file missing)", "meta": meta}
+
+                # TRƯỜNG HỢP 3: Tệp di trú từ v0.3.1 thiếu thông tin ownership (P0-01 DATA SAFETY)
+                elif existed_prior == "UNKNOWN" or ownership == "UNKNOWN_LEGACY_V031":
+                    # TUYỆT ĐỐI KHÔNG XÓA file khi không chắc chắn quyền sở hữu ban đầu!
+                    archived = preserve_user_modified_file(p, home)
+                    preserved_count += 1
+                    print(f"  🛡️ Tệp có nguồn gốc chưa xác minh (v0.3.1 legacy): Giữ nguyên tại chỗ và bảo tồn tại {archived}")
+
+                # TRƯỜNG HỢP 4: Tệp do HuyNex tạo mới hoàn toàn (existed_prior == False)
+                else:
+                    is_unmodified_new = False
+                    if current_sha:
+                        if installed_sha and current_sha == installed_sha:
+                            is_unmodified_new = True
+                        elif expected_after_sha and current_sha == expected_after_sha:
+                            is_unmodified_new = True
+
+                    if not is_unmodified_new:
+                        # Bảo vệ file người dùng đã chỉnh sửa với tên chống trùng lặp tuyệt đối
+                        archived = preserve_user_modified_file(p, home)
+                        preserved_count += 1
+                        print(f"  🛡️ Tệp {p} đã được người dùng chỉnh sửa sau khi cài: Bảo tồn tại {archived} và giữ nguyên.")
+                    else:
                         try:
                             p.unlink(missing_ok=True)
                             unlinked_count += 1
-                            print(f"  ✓ Đã xóa file rỗng do HuyNex tạo mới: {p}")
-                        except Exception as e:
-                            failed_entries[path_str] = {"error": f"Failed to unlink empty root: {e}", "meta": meta}
-                    else:
-                        # Byte-for-byte fidelity kèm xác minh SHA-256 backup
-                        if backup_file and Path(backup_file).is_file():
-                            is_unmodified_root = (
-                                (current_sha == installed_sha)
-                                or (expected_after_sha and current_sha == expected_after_sha)
-                            )
-                            if is_unmodified_root:
-                                ok_bk, bk_bytes, err_bk = verify_backup_integrity(Path(backup_file), expected_sha_before)
-                                if not ok_bk:
-                                    print(f"  ❌ LỖI TOÀN VẸN BACKUP ({p}): {err_bk}")
-                                    failed_entries[path_str] = {"error": err_bk, "meta": meta}
-                                    continue
-                                atomic_write(p, bk_bytes)
-                            else:
-                                # Người dùng có chỉnh sửa thêm trong khi cài -> archive và ghi cleaned_text
-                                archived = preserve_user_modified_file(p, home)
-                                preserved_count += 1
-                                print(f"  🛡️ Phát hiện chỉnh sửa cá nhân trong root instruction: Bảo tồn tại {archived}")
-                                atomic_write(p, cleaned_text.encode("utf-8"))
-                        else:
-                            atomic_write(p, cleaned_text.encode("utf-8"))
+                            print(f"  ✓ Đã xóa file do HuyNex cài: {p}")
+                        except OSError as e:
+                            failed_entries[path_str] = {"error": f"Failed to unlink HuyNex file: {e}", "meta": meta}
+                            print(f"  ❌ Lỗi khi xóa {p}: {e}")
+
+            # 2. Quét dọn fallback đối với các file root nếu manifest bị thiếu
+            clients = get_detected_clients(home)
+            for c_name, c_info in clients.items():
+                rf = c_info.get("root_file")
+                if rf and rf.is_file() and not is_path_or_parent_symlink(rf, boundary=home) and str(rf) not in failed_entries:
+                    cleaned_text, was_stripped = strip_rules_block_safely(rf)
+                    if was_stripped:
+                        atomic_write(rf, cleaned_text.encode("utf-8"))
                         cleaned_count += 1
-                        print(f"  ✓ Đã gỡ khối quản trị, BẢO TOÀN byte-for-byte nội dung riêng của người dùng: {p}")
+                        print(f"  ✓ Fallback: Đã gỡ khối quản trị khỏi {c_name} root: {rf}")
 
-            # TRƯỜNG HỢP 2: Tệp skill/rule ĐÃ TỒN TẠI TỪ TRƯỚC (existed_prior == True)
-            elif existed_prior is True and managed_mode == "managed_file":
-                # P0-01 DATA SAFETY & CRASH GAP: So sánh cả installed_sha, expected_after_sha và expected_sha_before
-                is_unmodified_pre = False
-                if current_sha:
-                    if installed_sha and current_sha == installed_sha:
-                        is_unmodified_pre = True
-                    elif expected_after_sha and current_sha == expected_after_sha:
-                        is_unmodified_pre = True
-                    elif expected_sha_before and current_sha == expected_sha_before:
-                        is_unmodified_pre = True
+            # 3. Gỡ bỏ đăng ký hook khỏi Claude settings.json
+            claude_settings = clients["Claude Code"]["settings_file"]
+            if claude_settings.is_file() and not is_path_or_parent_symlink(claude_settings, boundary=home):
+                unregistered = unconfigure_claude_guardrail(claude_settings)
+                if unregistered:
+                    print(f"  ✓ Đã gỡ bỏ đăng ký PreToolUse hook khỏi: {claude_settings}")
 
-                if not is_unmodified_pre:
-                    archived = preserve_user_modified_file(p, home)
-                    preserved_count += 1
-                    print(f"  🛡️ Tệp gốc {p} đã được chỉnh sửa sau khi cài: Bảo tồn tại {archived}")
-
-                if backup_file and Path(backup_file).is_file():
-                    ok_bk, bk_bytes, err_bk = verify_backup_integrity(Path(backup_file), expected_sha_before)
-                    if not ok_bk:
-                        print(f"  ❌ LỖI TOÀN VẸN BACKUP ({p}): {err_bk}. Từ chối ghi đè tệp đích.")
-                        failed_entries[path_str] = {"error": err_bk, "meta": meta}
-                        continue
-                    atomic_write(p, bk_bytes)
-                    restored_count += 1
-                    print(f"  ✓ PHỤC HỒI NGUYÊN TRẠNG (đã xác minh SHA-256) tệp gốc của người dùng từ backup: {p}")
-                else:
-                    # File vốn là của người dùng nhưng thiếu backup -> Giữ nguyên, KHÔNG xóa, ghi nhận vào failed
-                    print(f"  ⚠️ Cảnh báo: Tệp gốc của người dùng ({p}) được giữ nguyên (không tìm thấy bản backup).")
-                    failed_entries[path_str] = {"error": "Original user file retained (backup file missing)", "meta": meta}
-
-            # TRƯỜNG HỢP 3: Tệp di trú từ v0.3.1 thiếu thông tin ownership (P0-01 DATA SAFETY)
-            elif existed_prior == "UNKNOWN" or ownership == "UNKNOWN_LEGACY_V031":
-                # TUYỆT ĐỐI KHÔNG XÓA file khi không chắc chắn quyền sở hữu ban đầu!
-                archived = preserve_user_modified_file(p, home)
-                preserved_count += 1
-                print(f"  🛡️ Tệp có nguồn gốc chưa xác minh (v0.3.1 legacy): Giữ nguyên tại chỗ và bảo tồn tại {archived}")
-
-            # TRƯỜNG HỢP 4: Tệp do HuyNex tạo mới hoàn toàn (existed_prior == False)
+            # 4. Kiểm tra giao dịch và lưu trữ manifest nếu chưa hoàn tất
+            if failed_entries:
+                manifest_data["entries"] = {k: v["meta"] for k, v in failed_entries.items()}
+                manifest_data["status"] = "UNINSTALL_INCOMPLETE"
+                manifest_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+                save_manifest(manifest_file, manifest_data)
+                print("\n" + "=" * 65)
+                print(f"⚠️ GỠ CÀI ĐẶT CHƯA HOÀN TẤT ({len(failed_entries)} tệp cần lưu ý):")
+                for f_path, f_info in failed_entries.items():
+                    print(f"  • {f_path}: {f_info['error']}")
+                print(f"Manifest đã được bảo lưu tại {manifest_file} để phục vụ retry/kiểm toán.")
+                print("=" * 65)
+                return False
             else:
-                is_unmodified_new = False
-                if current_sha:
-                    if installed_sha and current_sha == installed_sha:
-                        is_unmodified_new = True
-                    elif expected_after_sha and current_sha == expected_after_sha:
-                        is_unmodified_new = True
-
-                if not is_unmodified_new:
-                    # Bảo vệ file người dùng đã chỉnh sửa với tên chống trùng lặp tuyệt đối
-                    archived = preserve_user_modified_file(p, home)
-                    preserved_count += 1
-                    print(f"  🛡️ Tệp {p} đã được người dùng chỉnh sửa sau khi cài: Bảo tồn tại {archived} và giữ nguyên.")
-                else:
-                    try:
-                        p.unlink(missing_ok=True)
-                        unlinked_count += 1
-                        print(f"  ✓ Đã xóa file do HuyNex cài: {p}")
-                    except OSError as e:
-                        failed_entries[path_str] = {"error": f"Failed to unlink HuyNex file: {e}", "meta": meta}
-                        print(f"  ❌ Lỗi khi xóa {p}: {e}")
-
-        # 2. Quét dọn fallback đối với các file root nếu manifest bị thiếu
-        clients = get_detected_clients(home)
-        for c_name, c_info in clients.items():
-            rf = c_info.get("root_file")
-            if rf and rf.is_file() and not is_path_or_parent_symlink(rf, boundary=home) and str(rf) not in failed_entries:
-                cleaned_text, was_stripped = strip_rules_block_safely(rf)
-                if was_stripped:
-                    atomic_write(rf, cleaned_text.encode("utf-8"))
-                    cleaned_count += 1
-                    print(f"  ✓ Fallback: Đã gỡ khối quản trị khỏi {c_name} root: {rf}")
-
-        # 3. Gỡ bỏ đăng ký hook khỏi Claude settings.json
-        claude_settings = clients["Claude Code"]["settings_file"]
-        if claude_settings.is_file() and not is_path_or_parent_symlink(claude_settings, boundary=home):
-            unregistered = unconfigure_claude_guardrail(claude_settings)
-            if unregistered:
-                print(f"  ✓ Đã gỡ bỏ đăng ký PreToolUse hook khỏi: {claude_settings}")
-
-        # 4. Kiểm tra giao dịch và lưu trữ manifest nếu chưa hoàn tất
-        if failed_entries:
-            manifest_data["entries"] = {k: v["meta"] for k, v in failed_entries.items()}
-            manifest_data["status"] = "UNINSTALL_INCOMPLETE"
-            manifest_data["updated_at"] = datetime.now(timezone.utc).isoformat()
-            save_manifest(manifest_file, manifest_data)
-            print("\n" + "=" * 65)
-            print(f"⚠️ GỠ CÀI ĐẶT CHƯA HOÀN TẤT ({len(failed_entries)} tệp cần lưu ý):")
-            for f_path, f_info in failed_entries.items():
-                print(f"  • {f_path}: {f_info['error']}")
-            print(f"Manifest đã được bảo lưu tại {manifest_file} để phục vụ retry/kiểm toán.")
-            print("=" * 65)
-            return False
-        else:
-            manifest_file.unlink(missing_ok=True)
-            print("\n" + "=" * 65)
-            print(f"🎉 GỠ CÀI ĐẶT HOÀN TẤT VÀ BẢO TOÀN DỮ LIỆU:")
-            print(f"  • {unlinked_count} tệp HuyNex sạch sẽ đã xóa")
-            print(f"  • {cleaned_count} tệp root được gỡ tag quản trị, giữ nguyên nội dung cá nhân")
-            print(f"  • {restored_count} tệp gốc có sẵn của người dùng được PHỤC HỒI 100% từ backup")
-            print(f"  • {preserved_count} tệp người dùng tự sửa sau khi cài được BẢO TỒN an toàn")
-            print("=" * 65)
-            return True
-    finally:
-        lock.__exit__(None, None, None)
+                manifest_file.unlink(missing_ok=True)
+                print("\n" + "=" * 65)
+                print(f"🎉 GỠ CÀI ĐẶT HOÀN TẤT VÀ BẢO TOÀN DỮ LIỆU:")
+                print(f"  • {unlinked_count} tệp HuyNex sạch sẽ đã xóa")
+                print(f"  • {cleaned_count} tệp root được gỡ tag quản trị, giữ nguyên nội dung cá nhân")
+                print(f"  • {restored_count} tệp gốc có sẵn của người dùng được PHỤC HỒI 100% từ backup")
+                print(f"  • {preserved_count} tệp người dùng tự sửa sau khi cài được BẢO TỒN an toàn")
+                print("=" * 65)
+                return True
+    except LifecycleLockError as e:
+        print(f"❌ LỖI KHÓA ĐỒNG THỜI (CONCURRENT LIFECYCLE): {e}")
+        return False
 
 
 def main():

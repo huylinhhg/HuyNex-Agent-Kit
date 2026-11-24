@@ -71,8 +71,8 @@ Tách biệt thành các module chuyên biệt, tương thích cú pháp `@impor
 
 | Tác vụ | Dung lượng Gốc (Est. Tokens) | Sau Chưng Cất (Est. Tokens) | Tỷ lệ Giảm Ký Tự* | Khả năng Giữ Lỗi |
 |---|---|---|---|---|
-| **Bộ test Vitest (120 tests)** | 6.376 chars (~1.594) | 284 chars (~71) | **95.5%** | **100% (4/4 lỗi giữ nguyên)** |
-| **Git Diff (5 file thay đổi)** | 5.966 chars (~1.491) | 1.736 chars (~434) | **70.9%** | **100% (Toàn bộ thay đổi giữ nguyên)** |
+| **Bộ test Vitest (101 tests)** | 6.373 chars (~1.593) | 297 chars (~74) | **95.3%** | **100% (4/4 lỗi giữ nguyên)** |
+| **Git Diff (6 hunks)** | 5.966 chars (~1.491) | 3.140 chars (~785) | **47.4%** | **100% (Thu gọn context, giữ nguyên thay đổi)** |
 
 *(\*Ghi chú đo lường: Chỉ số đo trực tiếp tỷ lệ giảm ký tự thực tế. Ước tính token sử dụng quy chuẩn ~4 ký tự/token; số token BPE thực tế phụ thuộc tokenizer của từng mô hình).*
 

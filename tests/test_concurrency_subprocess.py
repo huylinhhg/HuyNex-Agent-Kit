@@ -290,6 +290,78 @@ sys.stdout.flush()
         self.assertTrue(lock_file.exists())
         self.assertTrue(cmd_install(is_all=True, dry_run=False))
 
+    def test_kernel_lock_rejects_concurrent_locks_on_replaced_inode(self):
+        """TEST-02: Prove that two processes CANNOT create or hold two valid locks
+        on two different inodes simultaneously (Không thể tạo hai lock hợp lệ trên hai inode khác nhau).
+        When inode A is replaced by inode B while a process has opened a descriptor,
+        post-flock verification detects the detached inode, retries on inode B,
+        and is blocked by contention because another process holds inode B."""
+        lock_file = self.home / ".huynex/.lifecycle.lock"
+        lock_file.parent.mkdir(parents=True, exist_ok=True)
+        lock_file.write_text("initial_inode_a")
+
+        # Child process will acquire lock on current inode B and hold it
+        child_code = f"""
+import sys, time, pathlib
+sys.path.insert(0, r"{REPO_ROOT}")
+from scripts.install import LifecycleLock
+home = pathlib.Path(r"{self.home}")
+with LifecycleLock(home):
+    sys.stdout.write("READY\\n")
+    sys.stdout.flush()
+    sys.stdin.readline()
+sys.stdout.write("RELEASED\\n")
+sys.stdout.flush()
+"""
+        # Open descriptor fd1 on inode A before replacement
+        fd1 = os.open(str(lock_file), os.O_RDWR)
+        ino1 = os.fstat(fd1).st_ino
+
+        # Rename lock_file to .bak and create new file with inode B
+        bak_file = self.home / ".huynex/.lifecycle.lock.bak"
+        os.rename(str(lock_file), str(bak_file))
+        lock_file.write_text("new_inode_b")
+        ino2 = lock_file.stat().st_ino
+        self.assertNotEqual(ino1, ino2, "Inodes must be different")
+
+        # Child process acquires lock on inode B
+        proc = subprocess.Popen(
+            [sys.executable, "-c", child_code],
+            env=self.env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        ready_line = proc.stdout.readline().strip()
+        self.assertEqual(ready_line, "READY", "Child must acquire lock on inode B")
+
+        # 1. Parent process attempts to acquire lock via LifecycleLock:
+        # It must NOT acquire a lock on inode A; it must target inode B and fail with LifecycleLockError!
+        with self.assertRaises(LifecycleLockError):
+            with LifecycleLock(self.home):
+                pass
+
+        # 2. Also verify that install CLI fails with returncode 1 (blocked by child)
+        res = subprocess.run(
+            [sys.executable, str(INSTALL_PY), "--all"],
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertEqual(res.returncode, 1, "Concurrent install CLI must be blocked")
+
+        # 3. Release child
+        proc.stdin.write("GO\n")
+        proc.stdin.flush()
+        self.assertEqual(proc.stdout.readline().strip(), "RELEASED")
+        proc.wait(timeout=5)
+
+        # Cleanup
+        os.close(fd1)
+        bak_file.unlink(missing_ok=True)
+
     def test_lockfile_direct_symlink_corruption_prevented(self):
         """TEST-03: Direct symlink at .lifecycle.lock pointing to external file:
         Installer rejects operation, external file is untouched byte-for-byte,

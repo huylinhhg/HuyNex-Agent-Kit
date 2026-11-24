@@ -9,7 +9,7 @@ This contract defines the immutable safety invariants that govern the lifecycle 
 ### INV-01: Ownership Immutability
 - **Rule**: Any file existing before kit installation is classified as `EXISTED_PRIOR_USER`. This ownership classification is immutable and MUST NOT transition to `HUYNEX_CREATED` during upgrades, re-installations, or crash recovery.
 - **Fail-Safe**: If ownership metadata is missing or ambiguous (such as in legacy migrations), it MUST default to `UNKNOWN`. Files with `UNKNOWN` ownership are NEVER unlinked or deleted by the uninstaller.
-- **Verification**: `test_complete_state_machine_lifecycle`, `test_v031_legacy_manifest_migration`.
+- **Verification**: `test_complete_state_machine_lifecycle` (in `tests/test_state_machine_lifecycle.py`), `test_v031_legacy_manifest_migration` (in `tests/test_installer.py`).
 
 ### INV-02: No Silent Overwrite & Pre-Mutation Verification
 - **Rule**: No file on disk may be overwritten unless:
@@ -31,11 +31,11 @@ This contract defines the immutable safety invariants that govern the lifecycle 
 - **Fail-Safe**: If execution terminates at any point, uninstaller can determine whether the file was written, partially written, or post-modified by comparing disk content with both `sha256_expected_after` and `sha256_before`.
 - **Verification**: `test_p0_crash_gap_after_write_preserves_user_modifications`, `test_p1_crash_mid_install_wal_recovery` (in `tests/test_fault_injection.py`).
 
-### INV-05: OS-Level Kernel Lock Exclusivity
+### INV-05: OS-Level Kernel Lock Exclusivity & Inode Parity
 - **Rule**: At most one process may hold mutation rights across the `.huynex` lifecycle at any given instant.
-- **Mechanism**: Locking MUST be anchored to operating system kernel primitives (`fcntl.flock` on POSIX, `msvcrt.locking` on Windows) bound to an open file descriptor. Lockfile inode remains permanent and is never unlinked, preventing inode race conditions.
+- **Mechanism**: Locking MUST be anchored to operating system kernel primitives (`fcntl.flock` on POSIX, `msvcrt.locking` on Windows) bound to an open file descriptor. Lockfile inode remains permanent and is never unlinked. While holding exclusive kernel lock, descriptor inode is strictly verified against active filesystem path inode (`fstat_res.st_ino == lstat_res.st_ino`), immediately dropping detached descriptors and eliminating the two-lock-two-inode race condition.
 - **Fail-Safe**: If a process crashes or is killed via `SIGKILL`, the kernel automatically releases the lock descriptor. Stale lock recovery does not rely on fragile JSON parsing or race-prone PID heuristics.
-- **Verification**: `test_concurrent_subprocess_install_exactly_one_wins`, `test_subprocess_sigkill_lock_immediately_reclaimed_by_os`, `test_kernel_lock_inode_stability_and_no_unlink`, `test_kernel_lock_sequential_handoff_and_contention` (in `tests/test_concurrency_subprocess.py`).
+- **Verification**: `test_concurrent_subprocess_install_exactly_one_wins`, `test_subprocess_sigkill_lock_immediately_reclaimed_by_os`, `test_kernel_lock_inode_stability_and_no_unlink`, `test_kernel_lock_sequential_handoff_and_contention`, `test_kernel_lock_rejects_concurrent_locks_on_replaced_inode` (in `tests/test_concurrency_subprocess.py`).
 
 ### INV-06: Filesystem Boundary & Symlink Defense
 - **Rule**: The kit must never read from or write to arbitrary external paths via symbolic links.
@@ -66,7 +66,7 @@ This contract defines the immutable safety invariants that govern the lifecycle 
 | **INV-02** | `test_pre_mutation_toctou_absent_to_present_surprise` | `tests/test_concurrency_subprocess.py` |
 | **INV-03** | `test_p1_backup_sha256_tampering_refuses_restore` | `tests/test_fault_injection.py` |
 | **INV-04** | `test_p0_crash_gap_after_write_preserves_user_modifications` | `tests/test_fault_injection.py` |
-| **INV-05** | `test_concurrent_subprocess_install_exactly_one_wins` | `tests/test_concurrency_subprocess.py` |
+| **INV-05** | `test_concurrent_subprocess_install_exactly_one_wins`, `test_kernel_lock_rejects_concurrent_locks_on_replaced_inode` | `tests/test_concurrency_subprocess.py` |
 | **INV-06** | `test_lockfile_direct_symlink_corruption_prevented` | `tests/test_concurrency_subprocess.py` |
 | **INV-07** | `test_p0_corrupt_manifest_blocks_install_uninstall_and_doctor` | `tests/test_fault_injection.py` |
 | **INV-08** | `test_dry_run_check_is_idempotent_and_non_mutating` | `tests/test_installer.py` |
