@@ -54,12 +54,15 @@ class TestDataSafetyAndNonDestructiveUninstall(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             target = Path(tmp_dir) / "custom_script.sh"
             target.write_bytes(b"#!/bin/sh\necho 1\n")
-            target.chmod(0o750)
+            if sys.platform != "win32":
+                target.chmod(0o750)
 
-            # Atomic write without specifying mode should preserve 0o750
+            # Atomic write without specifying mode should preserve permissions
             atomic_write(target, b"#!/bin/sh\necho 2\n")
-            current_mode = target.stat().st_mode & 0o777
-            self.assertEqual(current_mode, 0o750)
+            self.assertEqual(target.read_bytes(), b"#!/bin/sh\necho 2\n")
+            if sys.platform != "win32":
+                current_mode = target.stat().st_mode & 0o777
+                self.assertEqual(current_mode, 0o750)
 
     def test_inject_and_strip_preserves_user_customizations(self):
         """P0 Test: Verifies that pre-existing user content is NEVER lost during install or uninstall."""
