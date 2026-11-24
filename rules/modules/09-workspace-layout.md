@@ -2,7 +2,7 @@
 
 - Kiến trúc cây thư mục đơn lẻ (Single-Tree Workspace Layout): Mỗi máy trạm duy trì một cây thư mục gốc duy nhất cho toàn bộ dự án. Các dự án đang hoạt động phân chia theo phạm vi rõ ràng; không nhân bản hoặc tạo workspace trùng lặp theo từng phiên chat của AI.
 - Quản lý tệp tạm và bàn giao (Work/Output Separation): Trong mỗi workspace hoặc tác vụ lẻ, sử dụng thư mục `work/` cho các tệp trung gian/nháp và `outputs/` cho các bản giao chính thức. Khi hoàn tất nhiệm vụ, BẮT BUỘC nghiệm thu tệp tại `outputs/` và dọn sạch file nháp trong `work/` để chống phình to dung lượng ổ cứng.
-- Bảo vệ dữ liệu đề xuất loại bỏ: Dữ liệu cũ hoặc thư mục nghi ngờ trùng lặp không xóa vội; ưu tiên di chuyển vào thư mục lưu trữ tạm (như `_archive/` hoặc `98_De_xuat_xoa/`) và kiểm tra đối chiếu hash trước khi xóa vĩnh viễn.
+- Bảo vệ dữ liệu đề xuất loại bỏ: Dữ liệu cũ hoặc thư mục nghi ngờ trùng lặp không xóa vội; ưu tiên di chuyển vào thư mục lưu trữ tạm (như `_archive/` hoặc `trash/`) và kiểm tra đối chiếu hash trước khi xóa vĩnh viễn.
 - Tiêu chuẩn máy trạm tinh gọn & hiệu năng cao (Power-User Zero-Bloat Standard):
   - Áp dụng triết lý Zero-Bloat trên cả macOS, Windows và Linux: Không chạy ngầm các ứng dụng dọn dẹp bên thứ ba hay updater daemon 24/7 gây lãng phí CPU/RAM.
   - Triệt tiêu độ trễ giao diện (Zero-Latency UI): Tối ưu tốc độ lặp phím (key repeat), độ nhạy chuột và phím tắt.

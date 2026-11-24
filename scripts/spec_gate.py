@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-HuyNex Spec-Driven Pre-Flight Gate V2 (scripts/spec_gate.py)
+HuyNex Spec-Driven Pre-Flight Gate V3 (scripts/spec_gate.py)
 ----------------------------------------------------------
 Evidence-Based Pre-Flight Verification Gate for AI Agent Tasks.
 
@@ -8,10 +8,11 @@ Fail-Closed Philosophy:
 - Never declare 'PASS' simply because checks were missing or skipped.
 - Pure JSON output for automation/CI pipelines when '--json' is specified.
 - Verifies:
-  1. Spec existence and checklist completion (- [ ] vs - [x])
-  2. Deliverables existence on disk
-  3. Git working tree cleanliness (--require-clean-git)
-  4. Automated project test suite execution
+  1. Spec existence and checklist completion (- [ ] vs - [x]). Spec with 0 items fails closed.
+  2. Deliverables existence on disk.
+  3. Git working tree cleanliness with error escalation (--require-clean-git).
+  4. Automated project test suite execution.
+  5. Clear separation between PASS, NOT_VERIFIED, and BLOCKED.
 """
 
 import argparse
@@ -21,6 +22,14 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+
+# Ensure UTF-8 output on all platforms (including Windows consoles)
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 
 def audit_checklist(file_path: Path) -> tuple[int, list[str]]:
@@ -40,7 +49,6 @@ def audit_deliverables(file_path: Path) -> tuple[list[str], list[str]]:
     if not file_path.is_file():
         return [], []
     text = file_path.read_text(encoding="utf-8", errors="ignore")
-    # Tìm các đường dẫn tệp dạng `path/to/file` hoặc [Deliverables]
     candidates = re.findall(r"`([a-zA-Z0-9_\-\./\\]+\.[a-zA-Z0-9]+)`", text)
     existing = []
     missing = []
@@ -48,19 +56,19 @@ def audit_deliverables(file_path: Path) -> tuple[list[str], list[str]]:
         p = Path(cand)
         if p.is_file():
             existing.append(cand)
-        elif "/" in cand or "\\" in cand:  # Chỉ coi là file nếu có dấu phân cách đường dẫn
+        elif "/" in cand or "\\" in cand:
             missing.append(cand)
     return existing, missing
 
 
-def check_git_clean() -> list[str]:
-    """Kiểm tra working tree git có sạch sẽ không."""
+def check_git_clean() -> tuple[list[str], str | None]:
+    """Kiểm tra working tree git có sạch sẽ không. Trả về (dirty_files, error_msg)."""
     try:
         res = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, check=True)
         lines = [line.strip() for line in res.stdout.splitlines() if line.strip()]
-        return lines
-    except Exception:
-        return []
+        return lines, None
+    except Exception as e:
+        return [], f"Git command failed: {e}"
 
 
 def run_project_tests() -> tuple[str | None, bool, str]:
@@ -84,11 +92,11 @@ def run_project_tests() -> tuple[str | None, bool, str]:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="HuyNex Spec-Driven Pre-Flight Gate V2")
+    parser = argparse.ArgumentParser(description="HuyNex Spec-Driven Pre-Flight Gate V3")
     parser.add_argument("spec", nargs="?", default="TASK.md", help="Đường dẫn file spec (mặc định: TASK.md)")
     parser.add_argument("--skip-tests", action="store_true", help="Bỏ qua bước chạy test tự động")
     parser.add_argument("--require-clean-git", action="store_true", help="Bắt buộc Git working tree phải sạch sẽ mới PASS")
-    parser.add_argument("--allow-unverified", action="store_true", help="Cho phép PASS ngay cả khi không tìm thấy checklist hoặc tests")
+    parser.add_argument("--allow-unverified", action="store_true", help="Cho phép thoát với exit 0 nhưng đánh dấu NOT_VERIFIED khi thiếu bằng chứng")
     parser.add_argument("--json", action="store_true", help="Chỉ xuất kết quả JSON thuần (Machine-readable) ra stdout")
     args = parser.parse_args()
 
@@ -111,7 +119,7 @@ def main():
         else:
             log_messages.append(msg)
 
-    log("\n🔍 [HUYNEX PRE-FLIGHT GATE V2] Đang đối chiếu tiêu chí nghiệm thu...")
+    log("\n🔍 [HUYNEX PRE-FLIGHT GATE V3] Đang đối chiếu tiêu chí nghiệm thu...")
 
     # 1. Quét Spec & Checklist
     spec_path = Path(args.spec)
@@ -132,7 +140,9 @@ def main():
             else:
                 log(f"  ✓ 100% Checklist đã hoàn thành ({total}/{total} items).")
         else:
-            log(f"  ⚠️ File '{args.spec}' tồn tại nhưng không có mục checklist '- [ ]'.")
+            log(f"  ❌ File '{args.spec}' tồn tại nhưng KHÔNG có mục checklist nào (- [ ]).")
+            # Fail-closed: File spec rỗng không được coi là đạt
+            results["blocking_reasons"].append(f"Spec file '{args.spec}' contains 0 checklist items")
 
         # 2. Quét Deliverables
         existing_deliv, missing_deliv = audit_deliverables(spec_path)
@@ -146,18 +156,23 @@ def main():
             log(f"  ✓ Đã xác minh {len(existing_deliv)} tệp bàn giao thực tế tồn tại trên đĩa.")
     else:
         log(f"  ⚠️ Không tìm thấy file spec '{args.spec}'.")
-        if not args.allow_unverified:
-            results["blocking_reasons"].append(f"Spec file '{args.spec}' not found")
+        results["blocking_reasons"].append(f"Spec file '{args.spec}' not found")
 
     # 3. Quét Git Cleanliness
-    dirty_files = check_git_clean()
-    results["git_status"] = {"dirty_count": len(dirty_files), "dirty_files": dirty_files[:10]}
-    if dirty_files:
-        log(f"  ⚠️ Cảnh báo: Git working tree có {len(dirty_files)} tệp chưa commit.")
+    dirty_files, git_err = check_git_clean()
+    if git_err:
+        log(f"  ⚠️ Lỗi khi kiểm tra Git status: {git_err}")
+        results["git_status"] = {"error": git_err, "dirty_count": -1}
         if args.require_clean_git:
-            results["blocking_reasons"].append("Git working tree is dirty (--require-clean-git enforced)")
+            results["blocking_reasons"].append(f"Git status failed to verify: {git_err}")
     else:
-        log("  ✓ Git working tree hoàn toàn sạch sẽ (Clean).")
+        results["git_status"] = {"dirty_count": len(dirty_files), "dirty_files": dirty_files[:10]}
+        if dirty_files:
+            log(f"  ⚠️ Cảnh báo: Git working tree có {len(dirty_files)} tệp chưa commit.")
+            if args.require_clean_git:
+                results["blocking_reasons"].append("Git working tree is dirty (--require-clean-git enforced)")
+        else:
+            log("  ✓ Git working tree hoàn toàn sạch sẽ (Clean).")
 
     # 4. Chạy Test Dự Án
     if not args.skip_tests:
@@ -171,30 +186,35 @@ def main():
                 results["blocking_reasons"].append(f"Test suite '{test_name}' failed")
         else:
             log("  ℹ️ Không phát hiện bộ test tự động nào trong thư mục.")
-            if not args.allow_unverified and not results["spec_found"]:
-                results["blocking_reasons"].append("No test suite detected and no spec found to verify")
 
-    # Phán quyết Fail-Closed
+    # Phán quyết Fail-Closed & Phân biệt rõ ràng PASS vs NOT_VERIFIED vs BLOCKED
     if results["blocking_reasons"]:
-        results["status"] = "BLOCKED"
-        exit_code = 1
-    elif not results["spec_found"] and not results["test_run"]["executed"] and not args.allow_unverified:
+        if args.allow_unverified:
+            results["status"] = "NOT_VERIFIED"
+            exit_code = 0
+        else:
+            results["status"] = "BLOCKED"
+            exit_code = 1
+    elif not results["spec_found"] and not results["test_run"]["executed"]:
         results["status"] = "NOT_VERIFIED"
-        results["blocking_reasons"].append("Zero evidence found (no spec checklist, no automated tests)")
-        exit_code = 1
+        if args.allow_unverified:
+            exit_code = 0
+        else:
+            results["blocking_reasons"].append("Zero evidence found (no spec checklist, no automated tests)")
+            results["status"] = "BLOCKED"
+            exit_code = 1
     else:
         results["status"] = "PASS"
         exit_code = 0
 
     if args.json:
-        # Xuất JSON thuần túy ra stdout
         print(json.dumps(results, indent=2))
     else:
         log("------------------------------------------------------------------")
         if results["status"] == "PASS":
             log("🎉 [PRE-FLIGHT GATE: PASSED] Toàn bộ tiêu chí đạt chuẩn, sẵn sàng nghiệm thu!\n")
         elif results["status"] == "NOT_VERIFIED":
-            log("⚠️ [PRE-FLIGHT GATE: NOT_VERIFIED] Chưa đủ bằng chứng khách quan (dùng --allow-unverified nếu muốn bỏ qua).\n")
+            log("⚠️ [PRE-FLIGHT GATE: NOT_VERIFIED] Chưa đủ bằng chứng khách quan (chạy với --allow-unverified).\n")
         else:
             log(f"🛑 [PRE-FLIGHT GATE: BLOCKED] Lỗi: {'; '.join(results['blocking_reasons'])}\n")
 

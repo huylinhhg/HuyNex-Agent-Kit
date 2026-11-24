@@ -2,10 +2,10 @@
 """
 HuyNex Agent Kit — Validator Suite (validate.py)
 -----------------------------------------------
-Bộ kiểm thử tính toàn vẹn và an ninh cho toàn bộ repository:
-1. Kiểm tra cấu trúc thư mục và cú pháp YAML frontmatter của mọi SKILL.md.
-2. Quét an ninh (Secret & PII Scanning) ngăn chặn rò rỉ token, email, đường dẫn máy cá nhân.
-3. Kiểm tra tính hợp lệ của quy tắc rules/ và lessons/.
+Integrity and security validator for HuyNex Agent Kit:
+1. Validates directory structure and YAML frontmatter of all SKILL.md files.
+2. Scans for hardcoded secrets, private paths, and organization PII.
+3. Ensures rules and lessons are well-formed.
 """
 
 import os
@@ -13,45 +13,53 @@ import re
 import sys
 from pathlib import Path
 
+# Ensure UTF-8 output on all platforms (including Windows consoles)
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 KIT_ROOT = Path(__file__).resolve().parent.parent
 SKILLS_DIR = KIT_ROOT / ".agents/skills"
 RULES_DIR = KIT_ROOT / "rules"
 LESSONS_DIR = KIT_ROOT / "lessons"
 
-# Các mẫu nhạy cảm cấm tuyệt đối xuất hiện trong public repo
+# Forbidden patterns that must NEVER appear in public open-source repos
 FORBIDDEN_PATTERNS = [
-    (r"/Users/maihuy", "Đường dẫn máy Mac cá nhân của Huy"),
-    (r"C:\\Users\\maitr", "Đường dẫn máy Windows cá nhân của Huy"),
+    (r"/Users/maihuy", "Personal macOS home path"),
+    (r"C:\\Users\\maitr", "Personal Windows home path"),
     (r"sk-[a-zA-Z0-9]{20,}", "OpenAI / Model API Key"),
     (r"ghp_[a-zA-Z0-9]{20,}", "GitHub Personal Access Token"),
-    (r"bearer\s+[a-zA-Z0-9_\-\.]{25,}", "Bearer Token xác thực"),
-    (r"PV01", "Ký hiệu đơn vị nghiệp vụ nội bộ"),
-    (r"Tham mưu Cảnh sát", "Ký hiệu đơn vị nghiệp vụ nội bộ"),
-    (r"Công an tỉnh Tuyên Quang", "Tên cơ quan nghiệp vụ nội bộ"),
+    (r"bearer\s+[a-zA-Z0-9_\-\.]{25,}", "Authentication Bearer Token"),
+    (r"\bPV01\b", "Private internal police unit designation"),
+    (r"Tham mưu Cảnh sát", "Private internal police unit name"),
+    (r"Công an tỉnh Tuyên Quang", "Private internal agency name"),
 ]
 
 
 def test_skills_frontmatter() -> list[str]:
     errors = []
     if not SKILLS_DIR.is_dir():
-        return ["Thư mục .agents/skills không tồn tại!"]
+        return ["Directory .agents/skills does not exist!"]
 
     for d in sorted(SKILLS_DIR.iterdir()):
         if not d.is_dir():
             continue
         skill_file = d / "SKILL.md"
         if not skill_file.is_file():
-            errors.append(f"Skill '{d.name}': Thiếu file SKILL.md")
+            errors.append(f"Skill '{d.name}': Missing SKILL.md")
             continue
 
         content = skill_file.read_text(encoding="utf-8")
         if not content.startswith("---"):
-            errors.append(f"Skill '{d.name}': SKILL.md không bắt đầu bằng YAML frontmatter '---'")
+            errors.append(f"Skill '{d.name}': SKILL.md does not start with YAML frontmatter '---'")
             continue
 
         parts = content.split("---", 2)
         if len(parts) < 3:
-            errors.append(f"Skill '{d.name}': YAML frontmatter không đóng mở đúng cặp '---'")
+            errors.append(f"Skill '{d.name}': YAML frontmatter is not properly closed with '---'")
             continue
 
         yaml_block = parts[1]
@@ -59,12 +67,12 @@ def test_skills_frontmatter() -> list[str]:
         desc_match = re.search(r"^description:\s*(.+)", yaml_block, re.MULTILINE)
 
         if not name_match:
-            errors.append(f"Skill '{d.name}': Thiếu trường 'name' hợp lệ trong frontmatter")
+            errors.append(f"Skill '{d.name}': Missing valid 'name' field in frontmatter")
         elif name_match.group(1).strip() != d.name:
-            errors.append(f"Skill '{d.name}': Trường 'name' ({name_match.group(1).strip()}) không khớp với tên thư mục ({d.name})")
+            errors.append(f"Skill '{d.name}': 'name' ({name_match.group(1).strip()}) does not match directory ({d.name})")
 
         if not desc_match or not desc_match.group(1).strip():
-            errors.append(f"Skill '{d.name}': Thiếu trường 'description' trong frontmatter")
+            errors.append(f"Skill '{d.name}': Missing 'description' in frontmatter")
 
     return errors
 
@@ -82,7 +90,7 @@ def test_secret_and_pii_leaks() -> list[str]:
                 matches = re.findall(pattern, text, re.IGNORECASE)
                 if matches:
                     rel_p = f.relative_to(KIT_ROOT)
-                    findings.append(f"Tệp '{rel_p}': Phát hiện vi phạm [{reason}] với mẫu '{pattern}' ({len(matches)} lần)")
+                    findings.append(f"File '{rel_p}': Detected [{reason}] matching '{pattern}' ({len(matches)} occurrences)")
     return findings
 
 
@@ -91,30 +99,30 @@ def main():
     print("HUYNEX AGENT KIT — TEST SUITE & SECURITY AUDITOR")
     print("=" * 65)
 
-    print("\n[1] Kiểm tra định dạng Agent Skills (.agents/skills/)...")
+    print("\n[1] Checking Agent Skills (.agents/skills/)...")
     frontmatter_errors = test_skills_frontmatter()
     if frontmatter_errors:
-        print("  ❌ PHÁT HIỆN LỖI ĐỊNH DẠNG:")
+        print("  [FAIL] Detected formatting errors:")
         for err in frontmatter_errors:
             print(f"     - {err}")
     else:
-        print("  ✅ Tất cả kỹ năng đều có YAML frontmatter hợp lệ và khớp tên thư mục.")
+        print("  [OK] All skills have valid YAML frontmatter matching directory names.")
 
-    print("\n[2] Kiểm tra rò rỉ bí mật & dữ liệu định danh (Secret & PII Audit)...")
+    print("\n[2] Checking Secret & PII Scanning (Confidentiality Audit)...")
     leak_findings = test_secret_and_pii_leaks()
     if leak_findings:
-        print("  ❌ PHÁT HIỆN RÒ RỈ BẢO MẬT:")
+        print("  [FAIL] Detected security/PII leaks:")
         for leak in leak_findings:
             print(f"     - {leak}")
     else:
-        print("  🛡️ HOÀN TOÀN SẠCH (CLEAN): Không phát hiện token, API key hoặc định danh cá nhân.")
+        print("  [OK] CLEAN: Zero tokens, private paths, or personal designations detected.")
 
     print("\n" + "=" * 65)
     if frontmatter_errors or leak_findings:
-        print("KẾT LUẬN: THẤT BẠI ✖ — Cần khắc phục các lỗi trên trước khi phát hành!")
+        print("VERDICT: FAILED - Resolve the above issues before release.")
         sys.exit(1)
     else:
-        print("KẾT LUẬN: ĐẠT CHUẨN XUẤT SẮC ● — Repo đủ điều kiện đóng gói và sử dụng.")
+        print("VERDICT: ALL CHECKS PASSED - Repository meets release standards.")
         sys.exit(0)
 
 

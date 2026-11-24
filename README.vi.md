@@ -77,6 +77,12 @@ Tách biệt thành các module chuyên biệt, tương thích cú pháp `@impor
 Tự chạy kiểm chứng trên máy:
 ```bash
 ./bin/huynex-distill --benchmark
+
+# Chưng cất log test từ đường ống:
+npm test | ./bin/huynex-distill
+
+# Chưng cất git diff từ đường ống:
+git diff | ./bin/huynex-distill --diff
 ```
 
 ---

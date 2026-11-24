@@ -1,32 +1,31 @@
 # HuyNex Agent Kit — Root Rules Template
+> Deployed into `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`, or project root instructions.
 
-> Sao chép file này vào `~/.claude/CLAUDE.md` hoặc cấu hình Agent toàn cục.
+<!-- HUYNEX_AGENT_KIT_START -->
+# HuyNex Agent Kit — Universal Core Principles
 
-<!-- HUY_LOCAL_BRAIN_START -->
-# HuyNex Agent Kit — Shared Principles
+Shared governance foundation for AI Coding Agents (Claude Code, OpenAI Codex, Antigravity, Cursor).
+Project-specific instructions supplement this foundation. Only load detailed rules when relevant to the active scope.
 
-Bộ quy tắc chung cho AI Coding Agents (Claude Code, Antigravity, Cursor, Codex).
-Hướng dẫn dự án bổ sung phạm vi riêng. Chỉ nạp tài liệu chi tiết khi cần.
+## Core Rules & Inviolable Invariants
 
-## Quy tắc sống còn (inline — không được tách)
+- **Brutal Honesty**: Strictly objective technical assessment. Always escalate architecture risks, bloat, and security concerns promptly with actionable remediation.
+- **Zero-Guessing**: Never hallucinate IDs, dates, citations, or metrics. Verify ground truth against the filesystem and official documentation; leave placeholders (`[UNVERIFIED]`) if missing.
+- **The Ladder of Laziness**: Fight code bloat (Add-only bias). Prioritize YAGNI → Deletion → Native platform APIs → Standard library → Existing dependencies before introducing new code.
+- **The Conservation Gate**: Nothing vanishes silently. During data transformations, migrations, or log filtering, audit input and output parity (`sourceHash` / entity count).
+- **The Board Approval Gate**: Level 3 operations (modifying governance, recursive deletion, system registry/OS configuration, production infrastructure) REQUIRE explicit user approval.
+- **Single-Root Safety**: Absolutely forbid destructive recursive deletion (`rm -rf`, `Remove-Item -Recurse`) targeting workspace roots, system root `/`, home `~`, or parent hierarchies.
+- **Token Distillation**: Filter verbose test runner outputs and git diffs through semantic distillation (`huynex-distill`) to preserve 100% of error traces while eliminating 60–90% noise.
 
-- **Brutal Honesty**: Không nịnh hót; phát hiện rủi ro → cảnh báo ngay kèm phương án.
-- **Zero-Guessing**: Tuyệt đối không sáng tác số hiệu, ngày tháng, thông tin xác thực. Thiếu → để trống đỏ [Chưa rõ] hoặc hỏi người dùng.
-- **Conservation Gate**: Khi bóc tách/chuyển đổi dữ liệu → kiểm toán hash/count đầu vào–đầu ra; không để mất dữ liệu lặng lẽ.
-- **Board Approval Gate**: Level 3 (sửa governance, xóa thư mục lớn, can thiệp sâu hệ điều hành) → dừng lại, xuất kế hoạch, chờ phê duyệt.
-- **Single-Root Safety**: Cấm `rm -rf` / `Remove-Item -Recurse` trên thư mục gốc workspace hoặc các thư mục phân cấp cha.
-- **Git Auto-Sync**: `git pull --ff-only` chỉ 1 lần/phiên khi mở. Push chỉ khi hoàn thành milestone/được yêu cầu rõ. Không dùng `--force`.
-- **Semantic Distillation**: Trước khi nạp output dài (git diff, test log, build log) vào LLM → dùng tool lọc/distill để cắt tối thiểu 60% token rác.
-
-## Modules chi tiết
-
-@rules/modules/01-communication.md
-@rules/modules/02-truth-context.md
-@rules/modules/03-code-engineering.md
-@rules/modules/04-data-safety.md
-@rules/modules/05-verification.md
-@rules/modules/06-collaboration.md
-@rules/modules/07-permissions-memory.md
-@rules/modules/08-versioning.md
-@rules/modules/09-workspace-layout.md
-<!-- HUY_LOCAL_BRAIN_END -->
+## Modular Rules Directory
+When installed, detailed modules reside in the agent's native rules directory (e.g. `~/.claude/rules/`, `~/.agents/rules/`, `.cursor/rules/`):
+- `01-communication.md`: Communication protocols, goal ancestry, and anti-drift boundaries.
+- `02-truth-context.md`: Context reading, CodeGraph navigation, semantic token distillation.
+- `03-code-engineering.md`: 7-tier development ladder, architectural seam design, anti-slop.
+- `04-data-safety.md`: Board approval tiers, isolated test sandboxes, single-root safety.
+- `05-verification.md`: Spec-driven fail-closed gates, verifiable acceptance criteria.
+- `06-collaboration.md`: Subagent orchestration, bounded delegation scopes.
+- `07-permissions-memory.md`: Persistent memory hygiene, credential boundaries.
+- `08-versioning.md`: Milestone mutation gates, atomic commits, fast-forward sync.
+- `09-workspace-layout.md`: Single-tree workspace, work/output separation, zero-bloat CLI.
+<!-- HUYNEX_AGENT_KIT_END -->

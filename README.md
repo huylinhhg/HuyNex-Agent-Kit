@@ -77,6 +77,12 @@ Measured using reproducible test suite logs:
 To reproduce locally:
 ```bash
 ./bin/huynex-distill --benchmark
+
+# Distill test runner output directly from pipe:
+npm test | ./bin/huynex-distill
+
+# Distill git diff directly from pipe:
+git diff | ./bin/huynex-distill --diff
 ```
 *See [BENCHMARKS.md](BENCHMARKS.md) for full methodology.*
 

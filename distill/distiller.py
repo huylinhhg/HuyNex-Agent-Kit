@@ -12,24 +12,32 @@ ANSI_PATTERN = re.compile(
 )
 SPINNER_CHARS = set("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 
+# Cap stream buffer at 20MB to avoid OOM on runaway infinite processes
+MAX_STREAM_BYTES = 20 * 1024 * 1024
+
+
+def enforce_buffer_cap(text: str, max_bytes: int = MAX_STREAM_BYTES) -> str:
+    """Enforces maximum buffer size to prevent memory exhaustion on runaway streams."""
+    encoded = text.encode("utf-8", errors="ignore")
+    if len(encoded) > max_bytes:
+        truncated = encoded[:max_bytes].decode("utf-8", errors="ignore")
+        return truncated + "\n\n[HUYNEX DISTILL WARNING: Stream capped at 20MB to prevent memory exhaustion]\n"
+    return text
+
 
 def strip_ansi_and_spinners(text: str) -> str:
     """Removes ANSI formatting, braille spinners, and handles \\r progress rewrites."""
-    # Strip ANSI
     cleaned = ANSI_PATTERN.sub("", text)
 
-    # Process carriage returns (\r) line by line (split by newline \n, not splitlines())
     processed_lines: List[str] = []
     for line in cleaned.split("\n"):
         if "\r" in line:
-            # When progress bar overwrites on the same line, the last segment is the final state
             parts = [p for p in line.split("\r") if p]
             if parts:
                 line = parts[-1]
             else:
                 line = ""
 
-        # Strip lone spinners at line start
         line_stripped = line.strip()
         if line_stripped and line_stripped[0] in SPINNER_CHARS:
             line = line.replace(line_stripped[0], "", 1).lstrip()
@@ -86,93 +94,100 @@ def distill_test_output(text: str) -> str:
                 kept_lines.append(line)
             continue
 
-        # Check if line indicates failure
         is_failure = any(p.search(line) for p in failing_patterns)
         if is_failure:
             in_failure_block = True
             kept_lines.append(line)
             continue
 
-        # Check if line indicates stack trace or failure context
         if in_failure_block:
-            # End failure block if we encounter a new passing test or final summary
             is_passing = any(p.search(line) for p in passing_patterns)
             is_summary = any(p.search(line) for p in summary_patterns)
-            if is_passing:
+            if is_passing or is_summary:
                 in_failure_block = False
-                passed_count += 1
-                continue
-            elif is_summary:
-                in_failure_block = False
-                kept_lines.append(line)
-                continue
             else:
-                # Keep lines in the failure block (traces, source snippets)
                 kept_lines.append(line)
                 continue
 
-        # Check if line is a passing test
-        if any(p.search(line) for p in passing_patterns):
+        is_summary = any(p.search(line) for p in summary_patterns)
+        if is_summary:
+            kept_lines.append(line)
+            continue
+
+        is_passing = any(p.search(line) for p in passing_patterns)
+        if is_passing:
             passed_count += 1
             continue
 
-        # Check if line is part of final test summary
-        if any(p.search(line) for p in summary_patterns):
-            kept_lines.append(line)
-            continue
-
-        # Keep other neutral lines if not excessively noisy
-        if not re.search(r"npm (?:notice|warn)|found 0 vulnerabilities", line, re.IGNORECASE):
-            kept_lines.append(line)
-
-    result_parts: List[str] = []
     if passed_count > 0:
-        result_parts.append(f"✓ [Collapsed] {passed_count} test items passed cleanly.")
+        kept_lines.insert(0, f"[PASSED TESTS COLLAPSED] {passed_count} test cases passed successfully.")
 
-    result_parts.extend(kept_lines)
-    return "\n".join(result_parts)
+    return "\n".join(kept_lines)
 
 
 def distill_git_diff(text: str) -> str:
     """
-    Distills git diffs by collapsing large stretches of unchanged context lines (> 3 lines)
-    while keeping 100% of headers, additions (+), and deletions (-).
+    Distills git diff output by:
+    - Retaining file headers (diff --git, ---, +++)
+    - Collapsing large unchanged context blocks into @@ headers
+    - Keeping 100% of mutations (+/- lines)
     """
-    cleaned = strip_ansi_and_spinners(text)
-    lines = cleaned.splitlines()
+    lines = text.splitlines()
+    distilled: List[str] = []
 
-    distilled_lines: List[str] = []
-    unchanged_buffer: List[str] = []
-
-    def flush_unchanged():
-        nonlocal unchanged_buffer
-        if not unchanged_buffer:
-            return
-        if len(unchanged_buffer) <= 3:
-            distilled_lines.extend(unchanged_buffer)
-        else:
-            # Keep 1 before, 1 after, collapse the rest
-            distilled_lines.append(unchanged_buffer[0])
-            omitted = len(unchanged_buffer) - 2
-            distilled_lines.append(f"  ... [{omitted} unchanged lines omitted]")
-            distilled_lines.append(unchanged_buffer[-1])
-        unchanged_buffer = []
+    consecutive_context = 0
+    context_buffer: List[str] = []
 
     for line in lines:
-        if line.startswith("diff --git") or line.startswith("@@") or line.startswith("---") or line.startswith("+++"):
-            flush_unchanged()
-            distilled_lines.append(line)
-        elif line.startswith("+") or line.startswith("-"):
-            flush_unchanged()
-            distilled_lines.append(line)
-        elif line.startswith(" ") or line == "":
-            unchanged_buffer.append(line)
-        else:
-            flush_unchanged()
-            distilled_lines.append(line)
+        if line.startswith("diff --git") or line.startswith("--- ") or line.startswith("+++ "):
+            if context_buffer:
+                if len(context_buffer) > 6:
+                    distilled.extend(context_buffer[:3])
+                    distilled.append(f"    ... ({len(context_buffer) - 6} lines unchanged) ...")
+                    distilled.extend(context_buffer[-3:])
+                else:
+                    distilled.extend(context_buffer)
+                context_buffer = []
 
-    flush_unchanged()
-    return "\n".join(distilled_lines)
+            distilled.append(line)
+            consecutive_context = 0
+            continue
+
+        if line.startswith("@@"):
+            if context_buffer:
+                if len(context_buffer) > 6:
+                    distilled.extend(context_buffer[:3])
+                    distilled.append(f"    ... ({len(context_buffer) - 6} lines unchanged) ...")
+                    distilled.extend(context_buffer[-3:])
+                else:
+                    distilled.extend(context_buffer)
+                context_buffer = []
+            distilled.append(line)
+            continue
+
+        if line.startswith("+") or line.startswith("-"):
+            if context_buffer:
+                if len(context_buffer) > 6:
+                    distilled.extend(context_buffer[:3])
+                    distilled.append(f"    ... ({len(context_buffer) - 6} lines unchanged) ...")
+                    distilled.extend(context_buffer[-3:])
+                else:
+                    distilled.extend(context_buffer)
+                context_buffer = []
+            distilled.append(line)
+            consecutive_context = 0
+        else:
+            context_buffer.append(line)
+
+    if context_buffer:
+        if len(context_buffer) > 6:
+            distilled.extend(context_buffer[:3])
+            distilled.append(f"    ... ({len(context_buffer) - 6} lines unchanged) ...")
+            distilled.extend(context_buffer[-3:])
+        else:
+            distilled.extend(context_buffer)
+
+    return "\n".join(distilled)
 
 
 def distill_generic(text: str) -> str:
@@ -198,11 +213,9 @@ def distill_generic(text: str) -> str:
     for line in lines:
         stripped = line.strip()
 
-        # Skip noise patterns
         if any(p.search(stripped) for p in NOISE_PATTERNS):
             continue
 
-        # Skip consecutive empty lines
         if not stripped:
             if filtered and filtered[-1] == "":
                 continue
@@ -210,7 +223,6 @@ def distill_generic(text: str) -> str:
             last_line = ""
             continue
 
-        # Deduplicate identical consecutive lines
         if line == last_line:
             repeat_count += 1
             continue
@@ -230,7 +242,9 @@ def distill_generic(text: str) -> str:
 def distill_stream(raw_text: str, cmd_hint: Optional[str] = None) -> str:
     """
     Intelligently routes raw terminal text to the optimal distillation handler.
+    Caps input buffer at 20MB to prevent memory exhaustion.
     """
+    raw_text = enforce_buffer_cap(raw_text)
     hint = (cmd_hint or "").lower()
 
     if "diff" in hint or "diff --git" in raw_text:

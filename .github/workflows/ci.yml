@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [ main ]
 
+env:
+  PYTHONIOENCODING: "utf-8"
+
 jobs:
   test:
     name: Test & Security Audit (${{ matrix.os }} - Python ${{ matrix.python-version }})
@@ -29,7 +32,7 @@ jobs:
         run: |
           python scripts/validate.py
 
-      - name: Run Test Suite (23 Unit & Adversarial Tests)
+      - name: Run Unit & Adversarial Test Suite
         run: |
           python -m unittest discover -s tests -p "test_*.py" -v
 
@@ -39,6 +42,12 @@ jobs:
           chmod +x bin/huynex-distill
           bin/huynex-distill --benchmark
 
-      - name: Run System Integrity Doctor
+      - name: Verify Installer Dry-Run (--check)
         run: |
+          python scripts/install.py --check
+
+      - name: Verify Installer Lifecycle (Install -> Doctor -> Uninstall)
+        run: |
+          python scripts/install.py --all
           python scripts/install.py --doctor
+          python scripts/install.py --uninstall

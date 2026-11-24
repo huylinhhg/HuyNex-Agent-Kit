@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Unit and Adversarial Tests for HuyNex Security Guardrails V2.
+Unit and Adversarial Tests for HuyNex Security Guardrails V3.
 """
 import json
 import subprocess
@@ -38,6 +38,30 @@ class TestSecurityGuardrails(unittest.TestCase):
         code, err = self.run_guardrail("git push origin +main")
         self.assertEqual(code, 2)
 
+    def test_blocks_force_with_lease(self):
+        code, err = self.run_guardrail("git push --force-with-lease origin main")
+        self.assertEqual(code, 2)
+
+        code, err = self.run_guardrail("git push --force-with-lease=origin/main")
+        self.assertEqual(code, 2)
+
+    def test_blocks_eval_and_subshell_bypass(self):
+        code, err = self.run_guardrail('eval "git push --force"')
+        self.assertEqual(code, 2)
+
+        code, err = self.run_guardrail("sh -c 'git reset --hard'")
+        self.assertEqual(code, 2)
+
+        code, err = self.run_guardrail("bash -c 'git clean -fd'")
+        self.assertEqual(code, 2)
+
+    def test_blocks_command_substitution(self):
+        code, err = self.run_guardrail("echo $(git push origin +main)")
+        self.assertEqual(code, 2)
+
+        code, err = self.run_guardrail("echo `git reset --hard`")
+        self.assertEqual(code, 2)
+
     def test_blocks_git_global_flags_bypass(self):
         code, err = self.run_guardrail("git -C . push --force")
         self.assertEqual(code, 2)
@@ -49,12 +73,21 @@ class TestSecurityGuardrails(unittest.TestCase):
         code, err = self.run_guardrail("git reset --hard HEAD~1")
         self.assertEqual(code, 2)
 
+        code, err = self.run_guardrail("git reset --hard=HEAD~1")
+        self.assertEqual(code, 2)
+
     def test_blocks_destructive_clean(self):
         code, err = self.run_guardrail("git clean -fd")
         self.assertEqual(code, 2)
 
+        code, err = self.run_guardrail("git clean -f")
+        self.assertEqual(code, 2)
+
     def test_blocks_force_branch_delete(self):
         code, err = self.run_guardrail("git branch -D feature/test")
+        self.assertEqual(code, 2)
+
+        code, err = self.run_guardrail("git branch --delete-force=feature/test")
         self.assertEqual(code, 2)
 
     def test_blocks_root_destruction(self):
@@ -83,6 +116,8 @@ class TestSecurityGuardrails(unittest.TestCase):
             "git pull --ff-only origin main",
             "git push origin main",
             "git branch -d merged-feature",
+            'echo "hello && world"',
+            'echo "safe || safe"',
             "npm test",
             "pytest tests/",
             "rm -rf work/temp_scratch",

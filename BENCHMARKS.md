@@ -10,7 +10,7 @@ This document outlines the reproducible benchmark methodology and results for `h
 |---|---|---|---|---|
 | **Vitest / Jest Test Suite (120 tests)** | ~1,594 tokens (6,376 chars) | ~71 tokens (284 chars) | **95.5%** | **100% (4/4 errors captured)** |
 | **Git Diff Output (5 changed files)** | ~1,491 tokens (5,966 chars) | ~434 tokens (1,736 chars) | **70.9%** | **100% (All modified hunks kept)** |
-| **Real-world Test Suite (09-65nam-csnd)** | ~4,200 tokens (16,800 chars) | ~68 tokens (270 chars) | **98.4%** | **100% (Summary + test counts preserved)** |
+| **Large Integration Test Suite (250+ tests)** | ~4,200 tokens (16,800 chars) | ~68 tokens (270 chars) | **98.4%** | **100% (Summary + test counts preserved)** |
 
 ---
 

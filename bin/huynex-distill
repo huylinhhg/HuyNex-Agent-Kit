@@ -9,6 +9,14 @@ import os
 import subprocess
 import argparse
 
+# Ensure UTF-8 output on all platforms (including Windows consoles)
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # Ensure local package can be loaded
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.dirname(SCRIPT_DIR))
@@ -28,7 +36,7 @@ def run_benchmark():
         test_lines.append(f" \x1b[32m✓\x1b[39m tests/module_{i}/service.test.ts ({i+1} tests) {i*2}ms")
     test_lines.append(" \x1b[31mFAIL\x1b[39m tests/billing/invoice.test.ts > charge card")
     test_lines.append(" AssertionError: Expected 200 Received 500")
-    test_lines.append("     at /Users/maihuy/app/billing.ts:102:11")
+    test_lines.append("     at /workspace/src/billing.ts:102:11")
     test_lines.append(" Test Files  1 failed | 100 passed (101)")
     test_lines.append("      Tests  1 failed | 5050 passed (5051)")
     test_lines.append("   Duration  2.85s")
@@ -71,6 +79,7 @@ def main():
     parser.add_argument("--raw", action="store_true", help="Bypass distillation and output raw stream")
     parser.add_argument("--stats", action="store_true", help="Show token reduction and conservation metrics")
     parser.add_argument("--type", choices=["test", "git", "generic"], default="generic", help="Force specific distiller")
+    parser.add_argument("--diff", action="store_true", help="Shortcut for --type git (distill git diff)")
     parser.add_argument("--benchmark", action="store_true", help="Run self-audit benchmark")
     parser.add_argument("--version", action="version", version="huynex-distill 1.0.0 (HuyNex ADOS)")
 
@@ -82,6 +91,8 @@ def main():
     if args.benchmark:
         run_benchmark()
         sys.exit(0)
+
+    distiller_type = "git" if args.diff else args.type
 
     # Determine command or pipe mode
     cmd = args.command
@@ -99,38 +110,36 @@ def main():
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                check=False,
+                check=False
             )
-            raw_output = proc.stdout
+            raw_output = proc.stdout or ""
             exit_code = proc.returncode
         except Exception as e:
-            sys.stderr.write(f"huynex-distill error executing command: {e}\n")
+            sys.stderr.write(f"huynex-distill execution error: {e}\n")
             sys.exit(1)
     else:
-        # Read from stdin
+        # Stdin pipe mode
         if sys.stdin.isatty():
             parser.print_help()
             sys.exit(0)
         raw_output = sys.stdin.read()
+        hint = distiller_type
         exit_code = 0
-        hint = args.type
 
     if args.raw:
         sys.stdout.write(raw_output)
         sys.exit(exit_code)
 
     distilled, stats = gate.audit_and_distill(raw_output, runner_type=hint)
-
     sys.stdout.write(distilled)
     if not distilled.endswith("\n"):
         sys.stdout.write("\n")
 
     if args.stats:
-        footer = (
-            f"\n[huynex-distill: ~{stats['tokens_in']} -> ~{stats['tokens_out']} tokens "
-            f"(-{stats['reduction_pct']}%) | Conserved: {stats['conservation_passed']}]\n"
+        sys.stderr.write(
+            f"\n[distill stats] {stats['chars_in']} -> {stats['chars_out']} chars "
+            f"(-{stats['reduction_pct']}%), errors: {stats['errors_in']} -> {stats['errors_out']}\n"
         )
-        sys.stderr.write(footer)
 
     sys.exit(exit_code)
 
